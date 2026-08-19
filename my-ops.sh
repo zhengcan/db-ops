@@ -327,7 +327,7 @@ restore_one_database() {
   tmp_sql="$(mktemp)"
   gzip -dc "$archive" > "$tmp_sql"
 
-  db_mysql -e "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`;" \
+  db_mysql -e "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`;" < /dev/null \
     || die "Failed to (re)create database: $db"
 
   schema_sql="$(mktemp)"
@@ -348,7 +348,7 @@ restore_one_database() {
     WHERE TABLE_SCHEMA='${db}'
       AND GENERATION_EXPRESSION IS NOT NULL
       AND GENERATION_EXPRESSION != '';
-  " > "$map_raw"
+  " < /dev/null > "$map_raw"
 
   : > "$map_file"
   while IFS="$(printf '\t')" read -r tbl col coltype; do

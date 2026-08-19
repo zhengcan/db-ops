@@ -80,3 +80,16 @@ run_restore() {
   grep -q "DROP COLUMN \`price_with_tax_tmp\`" "$STUB_LOG"
   grep -q "DROP COLUMN \`name_upper_tmp\`" "$STUB_LOG"
 }
+
+@test "restore processes every database in a comma-separated --database list" {
+  run run_restore env MYSQL_GENCOL_RESPONSE="" \
+    "$SCRIPT" restore --host h --port 3306 --user u --password p \
+    --dir backup_20260101_000000 --database plaindb,gencoldb --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Restored database: plaindb"* ]]
+  [[ "$output" == *"Restored database: gencoldb"* ]]
+  grep -q "DROP DATABASE IF EXISTS \`plaindb\`" "$STUB_LOG"
+  grep -q "CREATE DATABASE \`plaindb\`" "$STUB_LOG"
+  grep -q "DROP DATABASE IF EXISTS \`gencoldb\`" "$STUB_LOG"
+  grep -q "CREATE DATABASE \`gencoldb\`" "$STUB_LOG"
+}
