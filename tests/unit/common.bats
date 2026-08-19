@@ -1,0 +1,125 @@
+#!/usr/bin/env bats
+
+setup() {
+  SCRIPT="$BATS_TEST_DIRNAME/../../db-ops.sh"
+  export DB_OPS_TEST=1
+  # shellcheck disable=SC1090
+  . "$SCRIPT"
+}
+
+@test "split_csv splits and trims a comma separated list" {
+  result="$(split_csv "db1, db2 ,db3")"
+  expected="$(printf 'db1\ndb2\ndb3')"
+  [ "$result" = "$expected" ]
+}
+
+@test "split_csv returns single item for a list without commas" {
+  result="$(split_csv "onlydb")"
+  [ "$result" = "onlydb" ]
+}
+
+@test "parse_common_args sets DB_HOST DB_PORT DB_USER DB_PASSWORD" {
+  parse_common_args --host myhost --port 3307 --user myuser --password mypass
+  [ "$DB_HOST" = "myhost" ]
+  [ "$DB_PORT" = "3307" ]
+  [ "$DB_USER" = "myuser" ]
+  [ "$DB_PASSWORD" = "mypass" ]
+}
+
+@test "parse_common_args sets --database" {
+  parse_common_args --database db1,db2
+  [ "$DB_DATABASE" = "db1,db2" ]
+}
+
+@test "parse_common_args sets --all-databases" {
+  DB_ALL_DATABASES=0
+  parse_common_args --all-databases
+  [ "$DB_ALL_DATABASES" -eq 1 ]
+}
+
+@test "parse_common_args sets --force and --dir" {
+  parse_common_args --force --dir /tmp/somebackup
+  [ "$FORCE" -eq 1 ]
+  [ "$BACKUP_DIR" = "/tmp/somebackup" ]
+}
+
+@test "load_config sources a KEY=VALUE config file" {
+  cfg="$(mktemp)"
+  printf 'DB_HOST=cfghost\nDB_USER=cfguser\n' > "$cfg"
+  CONFIG_FILE="$cfg"
+  load_config
+  [ "$DB_HOST" = "cfghost" ]
+  [ "$DB_USER" = "cfguser" ]
+  rm -f "$cfg"
+}
+
+@test "load_config dies when config file is missing" {
+  CONFIG_FILE="/nonexistent/file.cfg"
+  run load_config
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ERROR"* ]]
+}
+
+@test "confirm returns success immediately when FORCE=1" {
+  FORCE=1
+  run confirm "Proceed?"
+  [ "$status" -eq 0 ]
+}
+
+@test "confirm returns success when user answers y" {
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; FORCE=0; echo y | confirm "Proceed?"'
+  [ "$status" -eq 0 ]
+}
+
+@test "confirm returns failure when user answers n" {
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; FORCE=0; echo n | confirm "Proceed?"'
+  [ "$status" -eq 1 ]
+}
+
+@test "db_mysqladmin invokes mysqladmin with required SSL flags and connection args" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass db_mysqladmin ping"
+  [ "$status" -eq 0 ]
+  grep -q -- "--ssl-mode=REQUIRED" "$STUB_LOG"
+  grep -q -- "--ssl-verify-server-cert=0" "$STUB_LOG"
+  grep -q -- "--host=testhost" "$STUB_LOG"
+  grep -q -- "--port=3306" "$STUB_LOG"
+  grep -q -- "--user=testuser" "$STUB_LOG"
+  grep -q -- "ping" "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
+@test "make_defaults_file writes password into a client section file with mode 600" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 sh -c "
+    . '$SCRIPT'
+    DB_PASSWORD=testpass make_defaults_file
+    grep -q '^password=testpass\$' \"\$_TMP_DEFAULTS_FILE\" || exit 1
+    perms=\$(stat -f '%Lp' \"\$_TMP_DEFAULTS_FILE\" 2>/dev/null || stat -c '%a' \"\$_TMP_DEFAULTS_FILE\")
+    [ \"\$perms\" = '600' ] || exit 1
+  "
+  [ "$status" -eq 0 ]
+}
+
+@test "check_connection fails when mysqladmin ping stub returns error" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 MYSQLADMIN_EXIT_CODE=1 STUB_LOG="$(mktemp)" \
+    sh -c ". '$SCRIPT'; DB_HOST=h DB_PORT=1 DB_USER=u DB_PASSWORD=p check_connection"
+  [ "$status" -eq 1 ]
+}
+
+@test "ensure_dependencies installs missing packages via apk" {
+  fake_bin="$(mktemp -d)"
+  cp "$BATS_TEST_DIRNAME/stubs/apk" "$fake_bin/apk"
+  chmod +x "$fake_bin/apk"
+  STUB_LOG="$(mktemp)"
+
+  run env PATH="$fake_bin:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" sh -c ". '$SCRIPT'; ensure_dependencies"
+
+  [ "$status" -eq 0 ]
+  grep -q "apk add --no-cache mariadb-client mariadb-connector-c gzip gawk" "$STUB_LOG"
+  [ -x "$fake_bin/mysql" ]
+  rm -rf "$fake_bin" "$STUB_LOG"
+}

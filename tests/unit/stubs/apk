@@ -1,0 +1,13 @@
+#!/bin/sh
+echo "$0 $*" >> "$STUB_LOG"
+if [ "$1" = "add" ]; then
+  dir="$(dirname "$0")"
+  for bin in mysql mysqldump mysqladmin gzip gawk; do
+    cat > "$dir/$bin" <<'INNER'
+#!/bin/sh
+exit 0
+INNER
+    chmod +x "$dir/$bin"
+  done
+fi
+exit 0

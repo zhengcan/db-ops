@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "$0 $*" >> "$STUB_LOG"
+exit "${MYSQL_EXIT_CODE:-0}"
