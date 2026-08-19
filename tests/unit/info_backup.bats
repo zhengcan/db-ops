@@ -12,11 +12,6 @@ teardown() {
   rm -rf "$WORK_DIR"
 }
 
-run_my_ops() {
-  ( cd "$WORK_DIR" && env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$@" "$SCRIPT" \
-      --host h --port 3306 --user u --password p )
-}
-
 @test "info reports connection OK and object counts for an explicit database" {
   cd "$WORK_DIR"
   run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" info \
@@ -37,6 +32,14 @@ run_my_ops() {
     --host h --port 3306 --user u --password p
   [ "$status" -eq 1 ]
   [[ "$output" == *"Specify --database"* ]]
+}
+
+@test "info fails with a clear error when --database resolves to an empty list" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" info \
+    --host h --port 3306 --user u --password p --database ","
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"No databases to process"* ]]
 }
 
 @test "info --all-databases reports a section for every discovered database" {
@@ -67,6 +70,11 @@ run_my_ops() {
   grep -q -- "--routines" "$STUB_LOG"
   grep -q -- "--triggers" "$STUB_LOG"
   grep -q -- "--events" "$STUB_LOG"
+
+  data_pass_line="$(grep -- "--no-create-info" "$STUB_LOG")"
+  [[ "$data_pass_line" == *"--skip-triggers"* ]]
+  [[ "$data_pass_line" == *"--skip-routines"* ]]
+  [[ "$data_pass_line" == *"--skip-events"* ]]
 }
 
 @test "backup --dir places the timestamped directory under the given base path" {

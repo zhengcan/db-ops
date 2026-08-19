@@ -62,7 +62,7 @@ load_config() {
 }
 
 split_csv() {
-  printf '%s\n' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$'
+  printf '%s\n' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | { grep -v '^$' || true; }
 }
 
 confirm() {
@@ -168,19 +168,31 @@ list_all_databases() {
     "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys');"
 }
 
+# Resolves which databases to operate on based on --all-databases / --database
+# flags, and validates the resulting list is non-empty. Echoes the newline
+# separated list of database names, one per line, to stdout.
+resolve_target_databases() {
+  target_databases=""
+  if [ "$DB_ALL_DATABASES" -eq 1 ]; then
+    target_databases="$(list_all_databases)"
+  elif [ -n "$DB_DATABASE" ]; then
+    target_databases="$(split_csv "$DB_DATABASE")"
+  else
+    die "Specify --database <db1,db2> or --all-databases"
+  fi
+
+  [ -n "$(printf '%s' "$target_databases" | tr -d '[:space:]')" ] || die "No databases to process"
+
+  printf '%s\n' "$target_databases"
+}
+
 # ===================== info subcommand =====================
 cmd_info() {
   ensure_dependencies
   check_connection
   echo "Connection OK: ${DB_USER}@${DB_HOST}:${DB_PORT}"
 
-  if [ "$DB_ALL_DATABASES" -eq 1 ]; then
-    databases="$(list_all_databases)"
-  elif [ -n "$DB_DATABASE" ]; then
-    databases="$(split_csv "$DB_DATABASE")"
-  else
-    die "Specify --database <db1,db2> or --all-databases"
-  fi
+  databases="$(resolve_target_databases)"
 
   printf '%s\n' "$databases" | while IFS= read -r db; do
     [ -n "$db" ] || continue
@@ -204,15 +216,7 @@ cmd_backup() {
   ensure_dependencies
   check_connection
 
-  if [ "$DB_ALL_DATABASES" -eq 1 ]; then
-    databases="$(list_all_databases)"
-  elif [ -n "$DB_DATABASE" ]; then
-    databases="$(split_csv "$DB_DATABASE")"
-  else
-    die "Specify --database <db1,db2> or --all-databases"
-  fi
-
-  [ -n "$(printf '%s' "$databases" | tr -d '[:space:]')" ] || die "No databases to back up"
+  databases="$(resolve_target_databases)"
 
   timestamp="$(date +%Y%m%d_%H%M%S)"
   if [ -n "$BACKUP_DIR" ]; then
@@ -241,7 +245,8 @@ backup_one_database() {
     || die "Schema dump failed for database: $db"
 
   db_mysqldump --no-create-info --complete-insert --skip-extended-insert \
-    --hex-blob --single-transaction "$db" >> "$tmp_sql" \
+    --hex-blob --single-transaction \
+    --skip-triggers --skip-routines --skip-events "$db" >> "$tmp_sql" \
     || die "Data dump failed for database: $db"
 
   gzip -c "$tmp_sql" > "$out_file"
