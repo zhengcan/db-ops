@@ -125,14 +125,11 @@ setup() {
   cfg="$(mktemp)"
   printf 'DB_HOST=cfghost\n' > "$cfg"
 
-  set -- --config "$cfg" --host clihost
-  extract_config_file "$@"
-  CONFIG_FILE="$_EXTRACTED_CONFIG_FILE"
-  load_config
-  parse_common_args "$@"
-
-  [ "$DB_HOST" = "clihost" ]
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main help --config "'"$cfg"'" --host clihost; echo "DB_HOST=$DB_HOST"'
   rm -f "$cfg"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DB_HOST=clihost"* ]]
 }
 
 @test "ensure_dependencies installs missing packages via apk" {
