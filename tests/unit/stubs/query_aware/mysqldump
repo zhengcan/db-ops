@@ -1,0 +1,13 @@
+#!/bin/sh
+# Query-aware mysqldump stub: emits a distinguishable marker line depending
+# on whether it was invoked for the schema-only pass or the data-only pass,
+# and includes the target database name so per-database output can be
+# told apart in multi-database tests.
+echo "$0 $*" >> "${STUB_LOG:-/dev/null}"
+db="$(eval echo \${$#})"
+case "$*" in
+  *--no-data*) echo "-- SCHEMA MARKER db=${db}" ;;
+  *--no-create-info*) echo "-- DATA MARKER db=${db}" ;;
+  *) echo "-- UNKNOWN DUMP CALL db=${db}: $*" ;;
+esac
+exit 0

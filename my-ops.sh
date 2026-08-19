@@ -168,6 +168,86 @@ list_all_databases() {
     "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys');"
 }
 
+# ===================== info subcommand =====================
+cmd_info() {
+  ensure_dependencies
+  check_connection
+  echo "Connection OK: ${DB_USER}@${DB_HOST}:${DB_PORT}"
+
+  if [ "$DB_ALL_DATABASES" -eq 1 ]; then
+    databases="$(list_all_databases)"
+  elif [ -n "$DB_DATABASE" ]; then
+    databases="$(split_csv "$DB_DATABASE")"
+  else
+    die "Specify --database <db1,db2> or --all-databases"
+  fi
+
+  printf '%s\n' "$databases" | while IFS= read -r db; do
+    [ -n "$db" ] || continue
+    echo ""
+    echo "Database: $db"
+    tables=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${db}' AND TABLE_TYPE='BASE TABLE';")
+    views=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${db}' AND TABLE_TYPE='VIEW';")
+    routines=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='${db}';")
+    triggers=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='${db}';")
+    events=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='${db}';")
+    echo "  Tables:               $tables"
+    echo "  Views:                $views"
+    echo "  Routines (proc/func): $routines"
+    echo "  Triggers:             $triggers"
+    echo "  Events:               $events"
+  done
+}
+
+# ===================== backup subcommand =====================
+cmd_backup() {
+  ensure_dependencies
+  check_connection
+
+  if [ "$DB_ALL_DATABASES" -eq 1 ]; then
+    databases="$(list_all_databases)"
+  elif [ -n "$DB_DATABASE" ]; then
+    databases="$(split_csv "$DB_DATABASE")"
+  else
+    die "Specify --database <db1,db2> or --all-databases"
+  fi
+
+  [ -n "$(printf '%s' "$databases" | tr -d '[:space:]')" ] || die "No databases to back up"
+
+  timestamp="$(date +%Y%m%d_%H%M%S)"
+  if [ -n "$BACKUP_DIR" ]; then
+    [ -d "$BACKUP_DIR" ] || die "Backup base directory not found: $BACKUP_DIR"
+    out_dir="${BACKUP_DIR%/}/backup_${timestamp}"
+  else
+    out_dir="backup_${timestamp}"
+  fi
+  mkdir -p "$out_dir"
+
+  printf '%s\n' "$databases" | while IFS= read -r db; do
+    [ -n "$db" ] || continue
+    echo "Backing up database: $db"
+    backup_one_database "$db" "$out_dir/${db}.sql.gz"
+  done
+
+  echo "Backup complete: $out_dir"
+}
+
+backup_one_database() {
+  db="$1"
+  out_file="$2"
+  tmp_sql="$(mktemp)"
+
+  db_mysqldump --no-data --routines --triggers --events "$db" >> "$tmp_sql" \
+    || die "Schema dump failed for database: $db"
+
+  db_mysqldump --no-create-info --complete-insert --skip-extended-insert \
+    --hex-blob --single-transaction "$db" >> "$tmp_sql" \
+    || die "Data dump failed for database: $db"
+
+  gzip -c "$tmp_sql" > "$out_file"
+  rm -f "$tmp_sql"
+}
+
 # ===================== usage & main (placeholder, extended in later tasks) =====================
 usage() {
   cat <<'EOF'
@@ -188,6 +268,8 @@ Common options:
 backup options:
   --database <db1,db2>  Comma-separated list of databases to back up
   --all-databases        Back up all non-system databases
+  --dir <path>           Base directory to place the timestamped backup_<ts>/
+                         folder in (default: current directory)
 
 restore options:
   --dir <backup_dir>     Backup directory produced by 'backup'
@@ -211,6 +293,12 @@ main() {
   parse_common_args "$@"
 
   case "$cmd" in
+    info)
+      cmd_info
+      ;;
+    backup)
+      cmd_backup
+      ;;
     -h|--help|help)
       usage
       ;;

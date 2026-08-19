@@ -1,0 +1,25 @@
+#!/bin/sh
+# Query-aware mysql stub: inspects "$*" for known query substrings and
+# returns canned output, so cmd_info/cmd_backup/cmd_restore logic can be
+# exercised without a real database. Every call is also logged to
+# $STUB_LOG for assertions on which queries/flags were actually issued.
+echo "$0 $*" >> "${STUB_LOG:-/dev/null}"
+args="$*"
+case "$args" in
+  *"SCHEMA_NAME NOT IN"*) printf 'db_one\ndb_two\n'; exit 0 ;;
+  *"TABLE_TYPE='BASE TABLE'"*) echo 3; exit 0 ;;
+  *"TABLE_TYPE='VIEW'"*) echo 1; exit 0 ;;
+  *"information_schema.ROUTINES"*) echo 2; exit 0 ;;
+  *"information_schema.TRIGGERS"*) echo 1; exit 0 ;;
+  *"information_schema.EVENTS"*) echo 1; exit 0 ;;
+  *"GENERATION_EXPRESSION"*)
+    printf '%s\n' "${MYSQL_GENCOL_RESPONSE:-}"
+    exit 0
+    ;;
+  *)
+    # DROP/CREATE DATABASE, ALTER TABLE, or schema/data import via stdin:
+    # just drain stdin (if any) and succeed.
+    cat >/dev/null 2>&1 || true
+    exit 0
+    ;;
+esac
