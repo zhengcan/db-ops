@@ -253,6 +253,129 @@ backup_one_database() {
   rm -f "$tmp_sql"
 }
 
+# ===================== restore subcommand =====================
+
+# Rewrites the INSERT column-name list (never the VALUES clause) so that
+# generated columns (listed in `mapfile`, tab-separated "table<TAB>column")
+# are redirected to <column>_tmp during data import. Invoked as:
+#   gawk -v mapfile=<path> "$GENCOL_AWK_PROGRAM" data.sql
+GENCOL_AWK_PROGRAM='
+BEGIN {
+  if (mapfile != "") {
+    while ((getline mline < mapfile) > 0) {
+      split(mline, parts, "\t")
+      if (parts[1] != "" && parts[2] != "") {
+        gencols[parts[1] SUBSEP parts[2]] = 1
+      }
+    }
+    close(mapfile)
+  }
+}
+
+{
+  line = $0
+  if (match(line, /^INSERT INTO `([^`]+)` \(/, m)) {
+    table = m[1]
+    open_paren = index(line, "(")
+    values_pos = index(line, ") VALUES")
+    if (open_paren > 0 && values_pos > open_paren) {
+      col_list = substr(line, open_paren + 1, values_pos - open_paren - 1)
+      n = split(col_list, cols, ", ")
+      out = ""
+      for (i = 1; i <= n; i++) {
+        col = cols[i]
+        colname = col
+        gsub(/`/, "", colname)
+        if ((table SUBSEP colname) in gencols) {
+          col = "`" colname "_tmp`"
+        }
+        out = (i == 1) ? col : out ", " col
+      }
+      line = substr(line, 1, open_paren) out substr(line, values_pos)
+    }
+  }
+  print line
+}
+'
+
+cmd_restore() {
+  ensure_dependencies
+  check_connection
+
+  [ -n "$BACKUP_DIR" ] || die "Specify --dir <backup_dir>"
+  [ -d "$BACKUP_DIR" ] || die "Backup directory not found: $BACKUP_DIR"
+  [ -n "$DB_DATABASE" ] || die "Specify --database <db1,db2> (explicit list required)"
+
+  databases="$(split_csv "$DB_DATABASE")"
+
+  printf '%s\n' "$databases" | while IFS= read -r db; do
+    [ -n "$db" ] || continue
+    archive="$BACKUP_DIR/${db}.sql.gz"
+    [ -f "$archive" ] || die "Backup file not found: $archive"
+
+    confirm "This will DROP and recreate database '$db'. Continue?" \
+      || die "Aborted by user for database: $db"
+
+    restore_one_database "$db" "$archive"
+    echo "Restored database: $db"
+  done
+}
+
+restore_one_database() {
+  db="$1"
+  archive="$2"
+  tmp_sql="$(mktemp)"
+  gzip -dc "$archive" > "$tmp_sql"
+
+  db_mysql -e "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`;" \
+    || die "Failed to (re)create database: $db"
+
+  schema_sql="$(mktemp)"
+  data_sql="$(mktemp)"
+  awk -v schema_out="$schema_sql" -v data_out="$data_sql" '
+    /^INSERT INTO / { in_insert = 1 }
+    in_insert { print >> data_out; next }
+    { print >> schema_out }
+  ' "$tmp_sql"
+
+  db_mysql "$db" < "$schema_sql" || die "Failed to import schema for database: $db"
+
+  map_raw="$(mktemp)"
+  map_file="$(mktemp)"
+  db_mysql -N -B -e "
+    SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA='${db}'
+      AND GENERATION_EXPRESSION IS NOT NULL
+      AND GENERATION_EXPRESSION != '';
+  " > "$map_raw"
+
+  : > "$map_file"
+  while IFS="$(printf '\t')" read -r tbl col coltype; do
+    [ -n "$tbl" ] || continue
+    printf '%s\t%s\n' "$tbl" "$col" >> "$map_file"
+    db_mysql "$db" -e "ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}_tmp\` ${coltype} NULL;" < /dev/null \
+      || die "Failed to add temp column ${col}_tmp on ${tbl}"
+  done < "$map_raw"
+
+  if [ -s "$map_file" ]; then
+    filtered_data_sql="$(mktemp)"
+    gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql" > "$filtered_data_sql"
+    db_mysql "$db" < "$filtered_data_sql" || die "Failed to import data for database: $db"
+    rm -f "$filtered_data_sql"
+
+    while IFS="$(printf '\t')" read -r tbl col; do
+      [ -n "$tbl" ] || continue
+      db_mysql "$db" -e "ALTER TABLE \`${tbl}\` DROP COLUMN \`${col}_tmp\`;" < /dev/null \
+        || die "Failed to drop temp column ${col}_tmp on ${tbl}"
+    done < "$map_file"
+  else
+    db_mysql "$db" < "$data_sql" || die "Failed to import data for database: $db"
+  fi
+
+  rm -f "$tmp_sql" "$schema_sql" "$data_sql" "$map_file" "$map_raw"
+}
+
 # ===================== usage & main (placeholder, extended in later tasks) =====================
 usage() {
   cat <<'EOF'
@@ -303,6 +426,9 @@ main() {
       ;;
     backup)
       cmd_backup
+      ;;
+    restore)
+      cmd_restore
       ;;
     -h|--help|help)
       usage
