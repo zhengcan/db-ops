@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
-  SCRIPT="$BATS_TEST_DIRNAME/../../db-ops.sh"
+  SCRIPT="$BATS_TEST_DIRNAME/../../my-ops.sh"
   export DB_OPS_TEST=1
   # shellcheck disable=SC1090
   . "$SCRIPT"

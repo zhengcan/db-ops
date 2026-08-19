@@ -17,12 +17,12 @@
 
 ## 脚本结构
 
-单文件 `db-ops.sh`，POSIX `sh` 编写，子命令：
+单文件 `my-ops.sh`，POSIX `sh` 编写，子命令：
 
 ```
-./db-ops.sh info    [连接与配置参数]
-./db-ops.sh backup   [连接与配置参数] [--database db1,db2 | --all-databases]
-./db-ops.sh restore  [连接与配置参数] --dir <backup_dir> --database db1,db2 [--force]
+./my-ops.sh info    [连接与配置参数]
+./my-ops.sh backup   [连接与配置参数] [--database db1,db2 | --all-databases]
+./my-ops.sh restore  [连接与配置参数] --dir <backup_dir> --database db1,db2 [--force]
 ```
 
 ## 配置
@@ -104,7 +104,7 @@
 ## `restore` 子命令
 
 ```
-./db-ops.sh restore --dir <backup_dir> --database db1,db2 [--force]
+./my-ops.sh restore --dir <backup_dir> --database db1,db2 [--force]
 ```
 
 - **必须显式指定库名列表**（逗号分隔），不支持自动恢复目录内全部库文件，
@@ -165,11 +165,11 @@
 1. 使用容器（如 docker/podman）启动一个带自签名 TLS 证书的 MySQL 实例，
    建表时包含至少一个虚拟生成列（VIRTUAL）和一个存储生成列（STORED），
    并包含 BLOB 二进制字段、视图、存储过程、触发器、事件
-2. 执行 `./db-ops.sh info` 验证连接成功（自签名证书不报错）且对象概览
+2. 执行 `./my-ops.sh info` 验证连接成功（自签名证书不报错）且对象概览
    数量正确
-3. 执行 `./db-ops.sh backup --database <db>`，验证目录结构
+3. 执行 `./my-ops.sh backup --database <db>`，验证目录结构
    `backup_<timestamp>/<db>.sql.gz` 生成正确
-4. 执行 `./db-ops.sh restore --dir <backup_dir> --database <db>`，验证：
+4. 执行 `./my-ops.sh restore --dir <backup_dir> --database <db>`，验证：
    - 表结构、索引、约束与源库一致
    - 生成列（虚拟/存储）恢复后计算结果与源库一致
    - 视图、存储过程/函数、触发器、事件正确恢复
