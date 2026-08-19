@@ -1,45 +1,45 @@
-# MySQL Backup/Restore Tool Implementation Plan
+# MySQL 备份/恢复工具实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行说明：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务执行本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** Build a single POSIX-shell tool (`db-ops.sh`) that runs on bare Alpine (self-installing its dependencies via `apk`) and can back up and restore all user tables, views, routines, triggers, and events of a MySQL database over a TLS connection that trusts self-signed certificates, correctly round-tripping generated (virtual/stored) columns and binary (BLOB) data.
+**目标：** 构建一个单一的 POSIX shell 工具（`db-ops.sh`），可在裸 Alpine 环境下运行（通过 `apk` 自行安装依赖），能够对 MySQL 数据库的所有用户表、视图、存储过程/函数、触发器和事件进行备份与恢复，连接时信任自签名 TLS 证书，并正确处理生成列（虚拟/存储）与二进制（BLOB）数据的往返一致性。
 
-**Architecture:** A dispatcher script (`db-ops.sh`) sources small library files under `lib/` for shared config/connection helpers (`common.sh`) and per-subcommand logic (`info.sh`, `backup.sh`, `restore.sh`). Generated-column handling is isolated in a `gawk` filter script (`lib/gencol_filter.awk`) that rewrites `INSERT` column lists at restore time, decoupled from value parsing.
+**架构：** 一个调度脚本（`db-ops.sh`）加载 `lib/` 下的小型库文件：共享的配置/连接辅助函数（`common.sh`）和各子命令逻辑（`info.sh`、`backup.sh`、`restore.sh`）。生成列的处理被隔离在一个 `gawk` 过滤脚本（`lib/gencol_filter.awk`）中，该脚本在恢复阶段重写 `INSERT` 语句的列名列表，与具体的值解析完全解耦。
 
-**Tech Stack:** POSIX `sh`, `mariadb-client` (`mysql`/`mysqldump`/`mysqladmin`), `mariadb-connector-c`, `gzip`, `gawk` — all installed via `apk` at runtime. Development/testing tooling: `bats-core` (unit tests) and Docker (integration environment with `mysql:8.0`, which auto-generates a self-signed TLS cert).
+**技术栈：** POSIX `sh`、`mariadb-client`（`mysql`/`mysqldump`/`mysqladmin`）、`mariadb-connector-c`、`gzip`、`gawk`——均在运行时通过 `apk` 安装。开发/测试工具：`bats-core`（单元测试）和 Docker（集成测试环境，使用会自动生成自签名 TLS 证书的 `mysql:8.0`）。
 
-## Global Constraints
+## 全局约束
 
-- Target runtime is bare Alpine; every non-busybox dependency (`mariadb-client`, `mariadb-connector-c`, `gzip`, `gawk`) must be auto-installed via `apk add --no-cache` if missing — never assume pre-installed.
-- All MySQL client connections must include `--ssl-mode=REQUIRED --ssl-verify-server-cert=0` (encrypt, do not validate self-signed certs).
-- Passwords must never appear in process argument lists — always pass via a temporary `--defaults-extra-file` (`[client]` section), deleted on exit via `trap`.
-- Backup must cover: all user tables (DDL+DML), views, stored procedures/functions, triggers, and events.
-- BLOB/binary columns must be exported with `--hex-blob`.
-- Generated (virtual/stored) columns must never have their original column touched (no `DROP`/`ALTER` on the generated column itself) — only an additive `<col>_tmp` staging column is used, so indexes/constraints on the table are unaffected.
-- Backup output: one directory per run, `backup_<YYYYMMDD_HHMMSS>/`, one file per database, `<db>.sql.gz`.
-- Restore requires an explicit `--database <db1,db2>` list — restoring "everything in a directory" implicitly is not supported.
-- Restore is destructive per database (`DROP DATABASE IF EXISTS` + `CREATE DATABASE`) and requires interactive confirmation unless `--force` is passed.
+- 目标运行环境为裸 Alpine；所有非 busybox 依赖（`mariadb-client`、`mariadb-connector-c`、`gzip`、`gawk`）缺失时必须通过 `apk add --no-cache` 自动安装——不能假设已预装。
+- 所有 MySQL 客户端连接必须包含 `--ssl-mode=REQUIRED --ssl-verify-server-cert=0`（强制加密，但不校验自签名证书）。
+- 密码绝不能出现在进程参数列表中——始终通过临时的 `--defaults-extra-file`（`[client]` 段）传递，并通过 `trap` 在退出时删除。
+- 备份必须覆盖：所有用户表（DDL+DML）、视图、存储过程/函数、触发器和事件。
+- BLOB/二进制字段必须使用 `--hex-blob` 导出。
+- 生成列（虚拟/存储）本身绝不能被改动（不能对生成列本身执行 `DROP`/`ALTER`）——只使用一个新增的 `<col>_tmp` 暂存列，因此表上的索引/约束不受影响。
+- 备份输出：每次运行生成一个目录 `backup_<YYYYMMDD_HHMMSS>/`，每个数据库一个文件 `<db>.sql.gz`。
+- 恢复必须显式指定 `--database <db1,db2>` 列表——不支持隐式地"恢复目录中的全部内容"。
+- 恢复对每个数据库都是破坏性操作（`DROP DATABASE IF EXISTS` + `CREATE DATABASE`），除非传入 `--force`，否则需要交互式确认。
 
 ---
 
-### Task 1: Config parsing and CLI scaffolding
+### 任务 1：配置解析与 CLI 脚手架
 
-**Files:**
-- Create: `db-ops.sh`
-- Create: `lib/common.sh`
-- Test: `tests/unit/common.bats`
+**文件：**
+- 创建：`db-ops.sh`
+- 创建：`lib/common.sh`
+- 测试：`tests/unit/common.bats`
 
-**Interfaces:**
-- Produces (used by all later tasks):
-  - Variables set after `parse_common_args "$@"` + `load_config`: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` (raw comma string), `DB_ALL_DATABASES` (0/1), `FORCE` (0/1), `BACKUP_DIR`, `CONFIG_FILE`
-  - `die "message"` — prints to stderr, exits 1
-  - `split_csv "a, b ,c"` — prints trimmed newline-separated items
-  - `confirm "prompt"` — returns 0 if `FORCE=1` or user answers y/Y/yes, else 1
-  - `$LIB_DIR` — absolute path to `lib/`, set as a global in `db-ops.sh`
+**接口：**
+- 产出（供后续所有任务使用）：
+  - 执行 `parse_common_args "$@"` + `load_config` 后设置的变量：`DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_DATABASE`（原始逗号字符串）、`DB_ALL_DATABASES`（0/1）、`FORCE`（0/1）、`BACKUP_DIR`、`CONFIG_FILE`
+  - `die "message"` —— 打印到 stderr，退出码 1
+  - `split_csv "a, b ,c"` —— 输出去除空白后的、以换行分隔的条目
+  - `confirm "prompt"` —— 当 `FORCE=1` 或用户回答 y/Y/yes 时返回 0，否则返回 1
+  - `$LIB_DIR` —— `lib/` 的绝对路径，在 `db-ops.sh` 中作为全局变量设置
 
-- [ ] **Step 1: Write the failing bats test**
+- [ ] **步骤 1：编写会失败的 bats 测试**
 
-Create `tests/unit/common.bats`:
+创建 `tests/unit/common.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -122,14 +122,14 @@ setup() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试，确认其失败**
 
-Run: `bats tests/unit/common.bats`
-Expected: FAIL — `lib/common.sh` does not exist yet.
+运行：`bats tests/unit/common.bats`
+预期：失败 —— `lib/common.sh` 尚不存在。
 
-- [ ] **Step 3: Implement `lib/common.sh`**
+- [ ] **步骤 3：实现 `lib/common.sh`**
 
-Create `lib/common.sh`:
+创建 `lib/common.sh`：
 
 ```sh
 #!/bin/sh
@@ -196,14 +196,14 @@ confirm() {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试，确认其通过**
 
-Run: `bats tests/unit/common.bats`
-Expected: all `parse_common_args`/`split_csv`/`load_config`/`confirm` tests PASS. (The dependency/connection tests referenced in Task 2 are not in this file yet.)
+运行：`bats tests/unit/common.bats`
+预期：所有 `parse_common_args`/`split_csv`/`load_config`/`confirm` 测试均通过。（任务 2 涉及的依赖/连接测试尚不在此文件中。）
 
-- [ ] **Step 5: Create the dispatcher script**
+- [ ] **步骤 5：创建调度脚本**
 
-Create `db-ops.sh`:
+创建 `db-ops.sh`：
 
 ```sh
 #!/bin/sh
@@ -284,9 +284,9 @@ main() {
 main "$@"
 ```
 
-Run: `chmod +x db-ops.sh`
+运行：`chmod +x db-ops.sh`
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add db-ops.sh lib/common.sh tests/unit/common.bats
@@ -295,49 +295,49 @@ git commit -m "feat: add CLI scaffolding and config parsing"
 
 ---
 
-### Task 2: Dependency installation and secure connection helpers
+### 任务 2：依赖安装与安全连接辅助函数
 
-**Files:**
-- Modify: `lib/common.sh`
-- Create: `tests/unit/connection.bats`
-- Create: `tests/unit/stubs/mysql`
-- Create: `tests/unit/stubs/mysqladmin`
-- Create: `tests/unit/stubs/mysqldump`
-- Create: `tests/unit/stubs/apk`
+**文件：**
+- 修改：`lib/common.sh`
+- 创建：`tests/unit/connection.bats`
+- 创建：`tests/unit/stubs/mysql`
+- 创建：`tests/unit/stubs/mysqladmin`
+- 创建：`tests/unit/stubs/mysqldump`
+- 创建：`tests/unit/stubs/apk`
 
-**Interfaces:**
-- Consumes: `die`, `$DB_HOST`, `$DB_PORT`, `$DB_USER`, `$DB_PASSWORD` from Task 1
-- Produces (used by Task 3+):
-  - `ensure_dependencies` — installs `mariadb-client mariadb-connector-c gzip gawk` via `apk` if any of `mysql mysqldump mysqladmin gzip gawk` is missing; dies if still missing after install
-  - `make_defaults_file` — creates `$_TMP_DEFAULTS_FILE` (mode 600) containing `[client]\npassword=$DB_PASSWORD`
-  - `db_mysql [args...]`, `db_mysqldump [args...]`, `db_mysqladmin [args...]` — wrappers that inject `--defaults-extra-file`, `--host`, `--port`, `--user`, `--ssl-mode=REQUIRED`, `--ssl-verify-server-cert=0`
-  - `check_connection` — dies if `db_mysqladmin ping` fails
-  - `cleanup_common` (registered via `trap ... EXIT INT TERM`) — removes `$_TMP_DEFAULTS_FILE`
+**接口：**
+- 消费：来自任务 1 的 `die`、`$DB_HOST`、`$DB_PORT`、`$DB_USER`、`$DB_PASSWORD`
+- 产出（供任务 3 及以后使用）：
+  - `ensure_dependencies` —— 当 `mysql mysqldump mysqladmin gzip gawk` 中任一命令缺失时，通过 `apk` 安装 `mariadb-client mariadb-connector-c gzip gawk`；安装后仍缺失则报错退出
+  - `make_defaults_file` —— 创建 `$_TMP_DEFAULTS_FILE`（权限 600），内容为 `[client]\npassword=$DB_PASSWORD`
+  - `db_mysql [args...]`、`db_mysqldump [args...]`、`db_mysqladmin [args...]` —— 自动注入 `--defaults-extra-file`、`--host`、`--port`、`--user`、`--ssl-mode=REQUIRED`、`--ssl-verify-server-cert=0` 的包装函数
+  - `check_connection` —— 若 `db_mysqladmin ping` 失败则报错退出
+  - `cleanup_common`（通过 `trap ... EXIT INT TERM` 注册）—— 删除 `$_TMP_DEFAULTS_FILE`
 
-- [ ] **Step 1: Write stub binaries for unit testing**
+- [ ] **步骤 1：编写用于单元测试的桩程序（stub）**
 
-Create `tests/unit/stubs/mysql`:
+创建 `tests/unit/stubs/mysql`：
 ```sh
 #!/bin/sh
 echo "$0 $*" >> "$STUB_LOG"
 exit "${MYSQL_EXIT_CODE:-0}"
 ```
 
-Create `tests/unit/stubs/mysqladmin`:
+创建 `tests/unit/stubs/mysqladmin`：
 ```sh
 #!/bin/sh
 echo "$0 $*" >> "$STUB_LOG"
 exit "${MYSQLADMIN_EXIT_CODE:-0}"
 ```
 
-Create `tests/unit/stubs/mysqldump`:
+创建 `tests/unit/stubs/mysqldump`：
 ```sh
 #!/bin/sh
 echo "$0 $*" >> "$STUB_LOG"
 exit "${MYSQLDUMP_EXIT_CODE:-0}"
 ```
 
-Create `tests/unit/stubs/apk`:
+创建 `tests/unit/stubs/apk`：
 ```sh
 #!/bin/sh
 echo "$0 $*" >> "$STUB_LOG"
@@ -354,11 +354,11 @@ fi
 exit 0
 ```
 
-Run: `chmod +x tests/unit/stubs/mysql tests/unit/stubs/mysqladmin tests/unit/stubs/mysqldump tests/unit/stubs/apk`
+运行：`chmod +x tests/unit/stubs/mysql tests/unit/stubs/mysqladmin tests/unit/stubs/mysqldump tests/unit/stubs/apk`
 
-- [ ] **Step 2: Write the failing bats test**
+- [ ] **步骤 2：编写会失败的 bats 测试**
 
-Create `tests/unit/connection.bats`:
+创建 `tests/unit/connection.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -433,14 +433,14 @@ teardown() {
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **步骤 3：运行测试，确认其失败**
 
-Run: `bats tests/unit/connection.bats`
-Expected: FAIL — `ensure_dependencies`, `make_defaults_file`, `db_mysql`, `db_mysqladmin`, `check_connection` not defined.
+运行：`bats tests/unit/connection.bats`
+预期：失败 —— `ensure_dependencies`、`make_defaults_file`、`db_mysql`、`db_mysqladmin`、`check_connection` 尚未定义。
 
-- [ ] **Step 4: Implement the connection helpers**
+- [ ] **步骤 4：实现连接辅助函数**
 
-Append to `lib/common.sh`:
+追加到 `lib/common.sh`：
 
 ```sh
 
@@ -513,12 +513,12 @@ list_all_databases() {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **步骤 5：运行测试，确认其通过**
 
-Run: `bats tests/unit/connection.bats`
-Expected: all tests PASS.
+运行：`bats tests/unit/connection.bats`
+预期：所有测试通过。
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add lib/common.sh tests/unit/connection.bats tests/unit/stubs
@@ -527,18 +527,18 @@ git commit -m "feat: add dependency install and secure connection helpers"
 
 ---
 
-### Task 3: Integration test environment (Docker + self-signed TLS MySQL)
+### 任务 3：集成测试环境（Docker + 自签名 TLS MySQL）
 
-**Files:**
-- Create: `tests/integration/docker-compose.yml`
-- Create: `tests/integration/init.sql`
+**文件：**
+- 创建：`tests/integration/docker-compose.yml`
+- 创建：`tests/integration/init.sql`
 
-**Interfaces:**
-- Produces: a running `mysql:8.0` container (service name `mysql`, network `db-ops-test-net`, database `testdb`, root password `rootpass`) auto-generating a self-signed TLS certificate on first start, seeded with a schema covering: a table with a `VIRTUAL` generated column, a table with a `STORED` generated column, a `BLOB` column, a view, a stored procedure, a trigger, and an event. Later tasks connect to it via `docker run --network db-ops-test-net ... alpine:3.19` to prove the tool runs on bare Alpine.
+**接口：**
+- 产出：一个运行中的 `mysql:8.0` 容器（服务名 `mysql`，网络 `db-ops-test-net`，数据库 `testdb`，root 密码 `rootpass`），首次启动时自动生成自签名 TLS 证书，并预置一套覆盖以下内容的 schema：一个带 `VIRTUAL` 生成列的表、一个带 `STORED` 生成列的表、一个 `BLOB` 字段、一个视图、一个存储过程、一个触发器和一个事件。后续任务通过 `docker run --network db-ops-test-net ... alpine:3.19` 连接它，以证明工具能在裸 Alpine 上运行。
 
-- [ ] **Step 1: Write the seed schema**
+- [ ] **步骤 1：编写种子 schema**
 
-Create `tests/integration/init.sql`:
+创建 `tests/integration/init.sql`：
 
 ```sql
 CREATE TABLE products (
@@ -586,9 +586,9 @@ DO
   DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL 30 DAY;
 ```
 
-- [ ] **Step 2: Write the compose file**
+- [ ] **步骤 2：编写 compose 文件**
 
-Create `tests/integration/docker-compose.yml`:
+创建 `tests/integration/docker-compose.yml`：
 
 ```yaml
 networks:
@@ -612,18 +612,18 @@ services:
       retries: 20
 ```
 
-- [ ] **Step 3: Bring the environment up and verify it manually**
+- [ ] **步骤 3：启动环境并手动验证**
 
-Run:
+运行：
 ```bash
 cd tests/integration
 docker compose up -d --wait
 ```
-Expected: command exits 0, `docker compose ps` shows `mysql` as `healthy`.
+预期：命令退出码为 0，`docker compose ps` 显示 `mysql` 状态为 `healthy`。
 
-- [ ] **Step 4: Verify self-signed TLS and seeded schema from a bare Alpine container**
+- [ ] **步骤 4：从裸 Alpine 容器验证自签名 TLS 与种子 schema**
 
-Run:
+运行：
 ```bash
 docker run --rm --network db-ops-test-net alpine:3.19 sh -c "
   apk add --no-cache mariadb-client >/dev/null &&
@@ -632,9 +632,9 @@ docker run --rm --network db-ops-test-net alpine:3.19 sh -c "
     -e 'SHOW TABLES; SELECT COUNT(*) FROM products;'
 "
 ```
-Expected: prints table list (`audit_log`, `products`) and a row count of `3`, with no TLS certificate errors.
+预期：打印表清单（`audit_log`、`products`）以及行数 `3`，没有 TLS 证书相关错误。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add tests/integration/docker-compose.yml tests/integration/init.sql
@@ -643,19 +643,19 @@ git commit -m "test: add dockerized MySQL integration environment with self-sign
 
 ---
 
-### Task 4: `info` subcommand
+### 任务 4：`info` 子命令
 
-**Files:**
-- Create: `lib/info.sh`
-- Create: `tests/integration/info.bats`
+**文件：**
+- 创建：`lib/info.sh`
+- 创建：`tests/integration/info.bats`
 
-**Interfaces:**
-- Consumes: `ensure_dependencies`, `check_connection`, `list_all_databases`, `split_csv`, `die`, `db_mysql` from Tasks 1–2; `$DB_DATABASE`, `$DB_ALL_DATABASES` from parsed args
-- Produces: `cmd_info` — entry point called by `db-ops.sh info`
+**接口：**
+- 消费：来自任务 1–2 的 `ensure_dependencies`、`check_connection`、`list_all_databases`、`split_csv`、`die`、`db_mysql`；解析后的 `$DB_DATABASE`、`$DB_ALL_DATABASES`
+- 产出：`cmd_info` —— 由 `db-ops.sh info` 调用的入口函数
 
-- [ ] **Step 1: Write the failing integration test**
+- [ ] **步骤 1：编写会失败的集成测试**
 
-Create `tests/integration/info.bats`:
+创建 `tests/integration/info.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -695,14 +695,14 @@ run_in_alpine() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试，确认其失败**
 
-Run: `bats tests/integration/info.bats`
-Expected: FAIL — `lib/info.sh` does not exist, `db-ops.sh info` errors with "Unknown command" style failure or missing file.
+运行：`bats tests/integration/info.bats`
+预期：失败 —— `lib/info.sh` 不存在，`db-ops.sh info` 报"未知命令"或文件缺失类错误。
 
-- [ ] **Step 3: Implement `lib/info.sh`**
+- [ ] **步骤 3：实现 `lib/info.sh`**
 
-Create `lib/info.sh`:
+创建 `lib/info.sh`：
 
 ```sh
 #!/bin/sh
@@ -739,12 +739,12 @@ cmd_info() {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试，确认其通过**
 
-Run: `bats tests/integration/info.bats`
-Expected: both tests PASS.
+运行：`bats tests/integration/info.bats`
+预期：两个测试均通过。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add lib/info.sh tests/integration/info.bats
@@ -753,19 +753,19 @@ git commit -m "feat: add info subcommand with connection and object overview"
 
 ---
 
-### Task 5: `backup` subcommand
+### 任务 5：`backup` 子命令
 
-**Files:**
-- Create: `lib/backup.sh`
-- Create: `tests/integration/backup.bats`
+**文件：**
+- 创建：`lib/backup.sh`
+- 创建：`tests/integration/backup.bats`
 
-**Interfaces:**
-- Consumes: `ensure_dependencies`, `check_connection`, `list_all_databases`, `split_csv`, `die`, `db_mysqldump` from Tasks 1–2
-- Produces: `cmd_backup` — entry point called by `db-ops.sh backup`; `backup_one_database "$db" "$out_file"` — helper used internally, writes a gzip of schema+data SQL for one database to `$out_file`
+**接口：**
+- 消费：来自任务 1–2 的 `ensure_dependencies`、`check_connection`、`list_all_databases`、`split_csv`、`die`、`db_mysqldump`
+- 产出：`cmd_backup` —— 由 `db-ops.sh backup` 调用的入口函数；`backup_one_database "$db" "$out_file"` —— 内部辅助函数，将某个数据库的 schema+data SQL 压缩写入 `$out_file`
 
-- [ ] **Step 1: Write the failing integration test**
+- [ ] **步骤 1：编写会失败的集成测试**
 
-Create `tests/integration/backup.bats`:
+创建 `tests/integration/backup.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -821,14 +821,14 @@ run_in_alpine() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试，确认其失败**
 
-Run: `bats tests/integration/backup.bats`
-Expected: FAIL — `lib/backup.sh` does not exist.
+运行：`bats tests/integration/backup.bats`
+预期：失败 —— `lib/backup.sh` 不存在。
 
-- [ ] **Step 3: Implement `lib/backup.sh`**
+- [ ] **步骤 3：实现 `lib/backup.sh`**
 
-Create `lib/backup.sh`:
+创建 `lib/backup.sh`：
 
 ```sh
 #!/bin/sh
@@ -878,12 +878,12 @@ backup_one_database() {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试，确认其通过**
 
-Run: `bats tests/integration/backup.bats`
-Expected: both tests PASS.
+运行：`bats tests/integration/backup.bats`
+预期：两个测试均通过。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add lib/backup.sh tests/integration/backup.bats
@@ -892,21 +892,21 @@ git commit -m "feat: add backup subcommand with per-database schema+data dumps"
 
 ---
 
-### Task 6: `restore` subcommand (baseline, no generated-column handling yet)
+### 任务 6：`restore` 子命令（基线版本，暂不处理生成列）
 
-**Files:**
-- Create: `lib/restore.sh`
-- Create: `tests/integration/restore_baseline.bats`
+**文件：**
+- 创建：`lib/restore.sh`
+- 创建：`tests/integration/restore_baseline.bats`
 
-**Interfaces:**
-- Consumes: `ensure_dependencies`, `check_connection`, `split_csv`, `confirm`, `die`, `db_mysql` from Tasks 1–2; backup files produced by Task 5
-- Produces: `cmd_restore` — entry point called by `db-ops.sh restore`; `restore_one_database "$db" "$archive"` — helper, restores one database from a `.sql.gz` archive (this task's version does a direct schema+data import with no generated-column staging — Task 7 extends it)
+**接口：**
+- 消费：来自任务 1–2 的 `ensure_dependencies`、`check_connection`、`split_csv`、`confirm`、`die`、`db_mysql`；任务 5 产出的备份文件
+- 产出：`cmd_restore` —— 由 `db-ops.sh restore` 调用的入口函数；`restore_one_database "$db" "$archive"` —— 辅助函数，从 `.sql.gz` 归档恢复单个数据库（本任务的版本直接导入 schema+data，暂不做生成列暂存处理——任务 7 会扩展它）
 
-This task proves the basic DROP/CREATE + schema/data import pipeline works end-to-end using `audit_log` (a table with no generated columns), deferring the generated-column fix to Task 7.
+本任务用 `audit_log`（一张没有生成列的表）验证基础的 DROP/CREATE + schema/data 导入流程能端到端跑通，生成列的修复留给任务 7。
 
-- [ ] **Step 1: Write the failing integration test**
+- [ ] **步骤 1：编写会失败的集成测试**
 
-Create `tests/integration/restore_baseline.bats`:
+创建 `tests/integration/restore_baseline.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -953,14 +953,14 @@ query_testdb() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试，确认其失败**
 
-Run: `bats tests/integration/restore_baseline.bats`
-Expected: FAIL — `lib/restore.sh` does not exist.
+运行：`bats tests/integration/restore_baseline.bats`
+预期：失败 —— `lib/restore.sh` 不存在。
 
-- [ ] **Step 3: Implement baseline `lib/restore.sh`**
+- [ ] **步骤 3：实现基线版 `lib/restore.sh`**
 
-Create `lib/restore.sh`:
+创建 `lib/restore.sh`：
 
 ```sh
 #!/bin/sh
@@ -1004,14 +1004,14 @@ restore_one_database() {
 }
 ```
 
-Note: this baseline implementation imports schema+data as a single stream. It will fail for `products` (which has generated columns) — that is expected and fixed in Task 7. This test only exercises `audit_log`, which has no generated columns.
+注意：该基线实现将 schema+data 作为一个整体流导入。对含生成列的 `products` 表会导入失败——这是预期的，将在任务 7 中修复。本测试仅覆盖没有生成列的 `audit_log`。
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试，确认其通过**
 
-Run: `bats tests/integration/restore_baseline.bats`
-Expected: PASS.
+运行：`bats tests/integration/restore_baseline.bats`
+预期：通过。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add lib/restore.sh tests/integration/restore_baseline.bats
@@ -1020,21 +1020,21 @@ git commit -m "feat: add baseline restore subcommand (drop/create + schema+data 
 
 ---
 
-### Task 7: Generated-column-safe restore
+### 任务 7：生成列安全的恢复流程
 
-**Files:**
-- Create: `lib/gencol_filter.awk`
-- Create: `tests/unit/gencol_filter.bats`
-- Modify: `lib/restore.sh`
-- Create: `tests/integration/restore_generated_columns.bats`
+**文件：**
+- 创建：`lib/gencol_filter.awk`
+- 创建：`tests/unit/gencol_filter.bats`
+- 修改：`lib/restore.sh`
+- 创建：`tests/integration/restore_generated_columns.bats`
 
-**Interfaces:**
-- Consumes: `restore_one_database` from Task 6; `$LIB_DIR` global from `db-ops.sh`
-- Produces: `lib/gencol_filter.awk` — a `gawk` script invoked as `gawk -v mapfile=<path> -f lib/gencol_filter.awk <data.sql>`, where `mapfile` contains tab-separated `table<TAB>column` lines (one per generated column); rewrites the column-name list of matching `INSERT INTO \`table\` (...)  VALUES` statements, appending `_tmp` to any listed generated column name. `restore_one_database` is extended to split schema/data, stage `_tmp` columns, run the filter, import, then drop the `_tmp` columns.
+**接口：**
+- 消费：任务 6 的 `restore_one_database`；`db-ops.sh` 中的全局变量 `$LIB_DIR`
+- 产出：`lib/gencol_filter.awk` —— 以 `gawk -v mapfile=<path> -f lib/gencol_filter.awk <data.sql>` 方式调用的 `gawk` 脚本，`mapfile` 中每行是一条 tab 分隔的 `table<TAB>column`（每个生成列一行）；对匹配的 `INSERT INTO \`table\` (...) VALUES` 语句重写列名列表，将列出的生成列名追加 `_tmp`。`restore_one_database` 被扩展为：拆分 schema/data、暂存 `_tmp` 列、运行过滤器、导入、再删除 `_tmp` 列。
 
-- [ ] **Step 1: Write the failing unit test for the awk filter**
+- [ ] **步骤 1：为 awk 过滤器编写会失败的单元测试**
 
-Create `tests/unit/gencol_filter.bats`:
+创建 `tests/unit/gencol_filter.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -1077,14 +1077,14 @@ EOF
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试，确认其失败**
 
-Run: `bats tests/unit/gencol_filter.bats`
-Expected: FAIL — `lib/gencol_filter.awk` does not exist.
+运行：`bats tests/unit/gencol_filter.bats`
+预期：失败 —— `lib/gencol_filter.awk` 不存在。
 
-- [ ] **Step 3: Implement `lib/gencol_filter.awk`**
+- [ ] **步骤 3：实现 `lib/gencol_filter.awk`**
 
-Create `lib/gencol_filter.awk`:
+创建 `lib/gencol_filter.awk`：
 
 ```awk
 # gencol_filter.awk
@@ -1134,21 +1134,21 @@ BEGIN {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试，确认其通过**
 
-Run: `bats tests/unit/gencol_filter.bats`
-Expected: both tests PASS.
+运行：`bats tests/unit/gencol_filter.bats`
+预期：两个测试均通过。
 
-- [ ] **Step 5: Commit the awk filter**
+- [ ] **步骤 5：提交 awk 过滤器**
 
 ```bash
 git add lib/gencol_filter.awk tests/unit/gencol_filter.bats
 git commit -m "feat: add gawk filter to redirect generated columns to _tmp columns"
 ```
 
-- [ ] **Step 6: Write the failing integration test for full restore with generated columns**
+- [ ] **步骤 6：为含生成列的完整恢复流程编写会失败的集成测试**
 
-Create `tests/integration/restore_generated_columns.bats`:
+创建 `tests/integration/restore_generated_columns.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -1224,14 +1224,14 @@ query_testdb() {
 }
 ```
 
-- [ ] **Step 7: Run test to verify it fails**
+- [ ] **步骤 7：运行测试，确认其失败**
 
-Run: `bats tests/integration/restore_generated_columns.bats`
-Expected: FAIL — restoring `products` errors because `price_with_tax`/`name_upper` are generated columns and the baseline `restore_one_database` tries to insert directly into them.
+运行：`bats tests/integration/restore_generated_columns.bats`
+预期：失败 —— 恢复 `products` 时报错，因为 `price_with_tax`/`name_upper` 是生成列，而基线版 `restore_one_database` 试图直接向它们插入值。
 
-- [ ] **Step 8: Extend `restore.sh` with generated-column staging**
+- [ ] **步骤 8：扩展 `restore.sh`，加入生成列暂存逻辑**
 
-Replace `restore_one_database` in `lib/restore.sh` with:
+用以下内容替换 `lib/restore.sh` 中的 `restore_one_database`：
 
 ```sh
 restore_one_database() {
@@ -1290,12 +1290,12 @@ restore_one_database() {
 }
 ```
 
-- [ ] **Step 9: Run test to verify it passes**
+- [ ] **步骤 9：运行测试，确认其通过**
 
-Run: `bats tests/integration/restore_generated_columns.bats tests/integration/restore_baseline.bats`
-Expected: all tests PASS — generated columns round-trip correctly, no `_tmp` columns remain, restore is idempotent, and the baseline (non-generated-column) restore from Task 6 still passes.
+运行：`bats tests/integration/restore_generated_columns.bats tests/integration/restore_baseline.bats`
+预期：全部通过 —— 生成列正确往返、不残留 `_tmp` 列、恢复具有幂等性，且任务 6 的基线（无生成列）恢复测试依旧通过。
 
-- [ ] **Step 10: Commit**
+- [ ] **步骤 10：提交**
 
 ```bash
 git add lib/restore.sh tests/integration/restore_generated_columns.bats
@@ -1304,19 +1304,19 @@ git commit -m "feat: stage generated columns through _tmp columns during restore
 
 ---
 
-### Task 8: Full end-to-end validation and usage docs
+### 任务 8：全流程端到端验证与使用文档
 
-**Files:**
-- Create: `tests/integration/full_roundtrip.bats`
-- Create: `README.md`
+**文件：**
+- 创建：`tests/integration/full_roundtrip.bats`
+- 创建：`README.md`
 
-**Interfaces:**
-- Consumes: `cmd_info`, `cmd_backup`, `cmd_restore` from Tasks 4–7
-- Produces: a documented, fully validated CLI (no new shared interfaces — this task is validation + docs only)
+**接口：**
+- 消费：任务 4–7 的 `cmd_info`、`cmd_backup`、`cmd_restore`
+- 产出：一份文档完善、经过完整验证的 CLI（本任务不新增共享接口，仅做验证与文档）
 
-- [ ] **Step 1: Write the full end-to-end bats test**
+- [ ] **步骤 1：编写完整的端到端 bats 测试**
 
-Create `tests/integration/full_roundtrip.bats`:
+创建 `tests/integration/full_roundtrip.bats`：
 
 ```bash
 #!/usr/bin/env bats
@@ -1383,51 +1383,47 @@ query_testdb() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails or passes**
+- [ ] **步骤 2：运行测试，确认其失败或通过**
 
-Run: `bats tests/integration/full_roundtrip.bats`
-Expected: PASS (this test composes already-implemented behavior from Tasks 4–7; if any assertion fails, fix the corresponding `lib/*.sh` file before proceeding — do not weaken the test).
+运行：`bats tests/integration/full_roundtrip.bats`
+预期：通过（本测试组合了任务 4–7 已实现的行为；若有断言失败，应先修复对应的 `lib/*.sh`，而不是弱化测试断言）。
 
-- [ ] **Step 3: Write `README.md`**
+- [ ] **步骤 3：编写 `README.md`**
 
-Create `README.md`:
+创建 `README.md`：
 
 ```markdown
 # db-ops
 
-A single POSIX-shell tool for backing up and restoring MySQL databases from
-a bare Alpine environment, over a TLS connection that trusts self-signed
-certificates, with correct handling of generated (virtual/stored) columns
-and BLOB data.
+一个单一的 POSIX shell 工具，用于在裸 Alpine 环境下备份和恢复 MySQL 数据库，
+连接时信任自签名 TLS 证书，并正确处理生成（虚拟/存储）列和 BLOB 数据。
 
-## Requirements
+## 环境要求
 
-Runs on any Alpine container with `apk` available and network access to
-the target MySQL server. All dependencies (`mariadb-client`,
-`mariadb-connector-c`, `gzip`, `gawk`) are installed automatically on
-first run.
+可在任何具备 `apk` 且能网络访问目标 MySQL 服务器的 Alpine 容器中运行。
+所有依赖（`mariadb-client`、`mariadb-connector-c`、`gzip`、`gawk`）首次运行时自动安装。
 
-## Usage
+## 用法
 
 \`\`\`sh
-# Check connectivity and see what would be backed up
+# 检查连通性并查看将被备份的内容
 ./db-ops.sh info --host mysql --port 3306 --user root --password secret --database mydb
 
-# Back up one or more databases (creates backup_<timestamp>/<db>.sql.gz)
+# 备份一个或多个数据库（生成 backup_<timestamp>/<db>.sql.gz）
 ./db-ops.sh backup --host mysql --port 3306 --user root --password secret --database mydb
 ./db-ops.sh backup --host mysql --port 3306 --user root --password secret --database db1,db2
 ./db-ops.sh backup --host mysql --port 3306 --user root --password secret --all-databases
 
-# Restore one or more databases from a backup directory (destructive: DROP + CREATE)
+# 从备份目录恢复一个或多个数据库（破坏性操作：DROP + CREATE）
 ./db-ops.sh restore --host mysql --port 3306 --user root --password secret \
   --dir backup_20260819_120000 --database mydb
 ./db-ops.sh restore --host mysql --port 3306 --user root --password secret \
   --dir backup_20260819_120000 --database mydb --force
 \`\`\`
 
-## Configuration file
+## 配置文件
 
-Instead of passing flags, use a KEY=VALUE config file:
+除了传参，也可以使用 KEY=VALUE 风格的配置文件：
 
 \`\`\`sh
 # db.conf
@@ -1441,42 +1437,38 @@ DB_PASSWORD=secret
 ./db-ops.sh info --config db.conf --database mydb
 \`\`\`
 
-Command-line flags always override values from the config file. Prefer
-setting `DB_PASSWORD` as an environment variable over `--password` or the
-config file, to avoid leaving credentials in shell history or on disk.
+命令行参数始终会覆盖配置文件中的同名值。建议通过 `DB_PASSWORD` 环境变量传递密码，
+而不是 `--password` 参数或配置文件，以避免密码留存在 shell 历史或磁盘上。
 
 ## TLS
 
-All connections use `--ssl-mode=REQUIRED --ssl-verify-server-cert=0`:
-traffic is encrypted, but the server's certificate is not validated,
-so self-signed certificates work without extra configuration.
+所有连接均使用 `--ssl-mode=REQUIRED --ssl-verify-server-cert=0`：
+流量被加密，但不校验服务器证书，因此自签名证书无需额外配置即可正常工作。
 
-## Generated columns
+## 生成列
 
-Backups always include full column definitions in `CREATE TABLE`
-statements. During restore, generated (virtual/stored) columns are never
-modified directly: an additive `<column>_tmp` column temporarily receives
-the dumped value, and is dropped once the database recomputes the real
-generated column from the row's other data. This means indexes, unique
-constraints, and foreign keys on the table are never affected.
+备份时 `CREATE TABLE` 语句始终包含完整的列定义。恢复时，生成（虚拟/存储）列本身
+绝不会被直接修改：会新增一个 `<column>_tmp` 列临时接收 dump 出来的值，待数据库
+根据同一行的其他数据重新计算出真正的生成列后，再删除该临时列。这意味着表上的
+索引、唯一约束、外键都不会受到任何影响。
 
-## Running the tests
+## 运行测试
 
-Unit tests (no database required):
+单元测试（无需数据库）：
 
 \`\`\`sh
-brew install bats-core   # one-time, macOS
+brew install bats-core   # 一次性安装，macOS
 bats tests/unit
 \`\`\`
 
-Integration tests (requires Docker):
+集成测试（需要 Docker）：
 
 \`\`\`sh
 bats tests/integration
 \`\`\`
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add tests/integration/full_roundtrip.bats README.md
@@ -1485,8 +1477,8 @@ git commit -m "test: add full end-to-end validation and usage documentation"
 
 ---
 
-## Self-Review Notes
+## 自查记录
 
-- **Spec coverage:** apk auto-install (Task 2), self-signed TLS with no cert verification (Task 2), full DDL+DML incl. views/routines/triggers/events (Tasks 5, 8), hex-blob binary safety (Task 5, verified in Task 7), generated-column-safe restore without touching indexes (Task 7), multi-database + `--all-databases` (Task 5), timestamped directory with one file per db (Task 5), explicit `--database` required for restore + confirmation/`--force` (Task 6), `info` subcommand (Task 4) — all covered.
-- **Placeholder scan:** no TBD/TODO markers; every step has runnable code.
-- **Type/name consistency:** `cmd_info`/`cmd_backup`/`cmd_restore` match `db-ops.sh` dispatch; `backup_one_database`/`restore_one_database` signatures consistent across Tasks 5–7; `gencol_filter.awk`'s `mapfile` format (`table\tcolumn`) matches what `restore.sh` writes in Task 7 Step 8.
+- **需求覆盖：** apk 自动安装（任务 2）、自签名 TLS 且不校验证书（任务 2）、完整 DDL+DML 含视图/存储过程/触发器/事件（任务 5、8）、hex-blob 二进制数据安全性（任务 5，任务 7 中验证）、生成列安全恢复且不影响索引（任务 7）、多库 + `--all-databases`（任务 5）、带时间戳目录且每库一个文件（任务 5）、恢复必须显式指定 `--database` 且需确认/支持 `--force`（任务 6）、`info` 子命令（任务 4）——均已覆盖。
+- **占位符检查：** 无 TBD/TODO 标记；每个步骤都有可运行的代码。
+- **命名/类型一致性：** `cmd_info`/`cmd_backup`/`cmd_restore` 与 `db-ops.sh` 的分发逻辑一致；`backup_one_database`/`restore_one_database` 的签名在任务 5–7 中保持一致；`gencol_filter.awk` 的 `mapfile` 格式（`table\tcolumn`）与任务 7 步骤 8 中 `restore.sh` 写入的格式一致。
