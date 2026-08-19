@@ -38,6 +38,21 @@ parse_common_args() {
   done
 }
 
+# Scans "$@" for a `--config <file>` option only (does not parse any
+# other options) and stores the result in $_EXTRACTED_CONFIG_FILE. Used
+# by main() to discover CONFIG_FILE before load_config runs, so that
+# config-file defaults can be established prior to the full CLI parse
+# (which must take precedence over the config file).
+extract_config_file() {
+  _EXTRACTED_CONFIG_FILE=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --config) _EXTRACTED_CONFIG_FILE="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+}
+
 load_config() {
   if [ -n "$CONFIG_FILE" ]; then
     [ -f "$CONFIG_FILE" ] || die "Config file not found: $CONFIG_FILE"
@@ -100,29 +115,48 @@ make_defaults_file() {
   printf '[client]\npassword=%s\n' "$DB_PASSWORD" > "$_TMP_DEFAULTS_FILE"
 }
 
-_conn_flags() {
-  printf '%s\n' \
+# Each db_* wrapper below prepends the common connection flags to its
+# positional parameters via `set --` (rather than an unquoted command
+# substitution) so that values such as DB_HOST containing spaces are
+# forwarded as single arguments, not word-split.
+
+db_mysql() {
+  [ -n "$_TMP_DEFAULTS_FILE" ] || make_defaults_file
+  set -- \
     "--defaults-extra-file=${_TMP_DEFAULTS_FILE}" \
     "--host=${DB_HOST}" \
     "--port=${DB_PORT}" \
     "--user=${DB_USER}" \
     "--ssl-mode=REQUIRED" \
-    "--ssl-verify-server-cert=0"
-}
-
-db_mysql() {
-  [ -n "$_TMP_DEFAULTS_FILE" ] || make_defaults_file
-  mysql $(_conn_flags) "$@"
+    "--ssl-verify-server-cert=0" \
+    "$@"
+  mysql "$@"
 }
 
 db_mysqldump() {
   [ -n "$_TMP_DEFAULTS_FILE" ] || make_defaults_file
-  mysqldump $(_conn_flags) "$@"
+  set -- \
+    "--defaults-extra-file=${_TMP_DEFAULTS_FILE}" \
+    "--host=${DB_HOST}" \
+    "--port=${DB_PORT}" \
+    "--user=${DB_USER}" \
+    "--ssl-mode=REQUIRED" \
+    "--ssl-verify-server-cert=0" \
+    "$@"
+  mysqldump "$@"
 }
 
 db_mysqladmin() {
   [ -n "$_TMP_DEFAULTS_FILE" ] || make_defaults_file
-  mysqladmin $(_conn_flags) "$@"
+  set -- \
+    "--defaults-extra-file=${_TMP_DEFAULTS_FILE}" \
+    "--host=${DB_HOST}" \
+    "--port=${DB_PORT}" \
+    "--user=${DB_USER}" \
+    "--ssl-mode=REQUIRED" \
+    "--ssl-verify-server-cert=0" \
+    "$@"
+  mysqladmin "$@"
 }
 
 check_connection() {
@@ -171,8 +205,10 @@ main() {
   cmd="$1"
   shift
 
-  parse_common_args "$@"
+  extract_config_file "$@"
+  CONFIG_FILE="$_EXTRACTED_CONFIG_FILE"
   load_config
+  parse_common_args "$@"
 
   case "$cmd" in
     -h|--help|help)

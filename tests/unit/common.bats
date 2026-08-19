@@ -110,6 +110,31 @@ setup() {
   [ "$status" -eq 1 ]
 }
 
+@test "db_mysql passes a DB_HOST containing spaces as a single argument" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c '. "'"$SCRIPT"'"; DB_HOST="my host" DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass db_mysql -e "SELECT 1"'
+  [ "$status" -eq 0 ]
+  grep -q -- "ARG:\[--host=my host\]" "$STUB_LOG"
+  ! grep -q -- "ARG:\[--host=my\]" "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
+@test "main loads config before parsing CLI args so CLI args take precedence" {
+  cfg="$(mktemp)"
+  printf 'DB_HOST=cfghost\n' > "$cfg"
+
+  set -- --config "$cfg" --host clihost
+  extract_config_file "$@"
+  CONFIG_FILE="$_EXTRACTED_CONFIG_FILE"
+  load_config
+  parse_common_args "$@"
+
+  [ "$DB_HOST" = "clihost" ]
+  rm -f "$cfg"
+}
+
 @test "ensure_dependencies installs missing packages via apk" {
   fake_bin="$(mktemp -d)"
   cp "$BATS_TEST_DIRNAME/stubs/apk" "$fake_bin/apk"
