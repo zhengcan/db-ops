@@ -6,7 +6,7 @@
 
 **架构：** 所有逻辑（配置解析、依赖安装、连接辅助、`info`/`backup`/`restore` 子命令、生成列过滤的 awk 程序）都写在同一个 `my-ops.sh` 文件中，便于单文件分发/部署（如 `scp`/`curl` 直接拷贝到目标机器）。生成列过滤逻辑以 shell 变量形式内嵌 awk 程序文本（而非独立的 `.awk` 文件），通过 `gawk -v mapfile=... "$GENCOL_AWK_PROGRAM" data.sql` 调用。脚本顶部提供 `DB_OPS_TEST` 环境变量守卫：当该变量为 `1` 时，`source` 脚本只加载函数定义、不执行 `main`，供测试直接调用内部函数。
 
-**技术栈：** POSIX `sh`、`mariadb-client`（`mysql`/`mysqldump`/`mysqladmin`）、`mariadb-connector-c`、`gzip`、`gawk`——均在运行时通过 `apk` 安装。开发/测试工具：`bats-core`（单元测试）和 Docker（集成测试环境，使用会自动生成自签名 TLS 证书的 `mysql:8.0`）。
+**技术栈：** POSIX `sh`、`mariadb-client`（`mysql`/`mysqldump`/`mysqladmin`）、`mariadb-connector-c`、`gzip`、`gawk`——均在运行时通过 `apk` 安装。开发/测试工具：`bats-core`（单元测试）和 Docker（集成测试环境，使用会自动生成自签名 TLS 证书的 `mysql:8`）。
 
 ## 全局约束
 
@@ -1079,7 +1079,7 @@ git commit -m "feat: add restore subcommand with generated-column-safe staging"
 - 创建：`tests/integration/init.sql`
 
 **接口：**
-- 产出：一个运行中的 `mysql:8.0` 容器（服务名 `mysql`，网络 `db-ops-test-net`，数据库 `testdb`，root 密码 `rootpass`），首次启动时自动生成自签名 TLS 证书，并预置一套覆盖以下内容的 schema：一个带 `VIRTUAL` 生成列的表、一个带 `STORED` 生成列的表、一个 `BLOB` 字段、一个视图、一个存储过程、一个触发器和一个事件。任务 5 通过 `docker run --network db-ops-test-net -v <repo>:/work -w /work alpine:3.19 sh -c "./my-ops.sh ..."` 连接它，证明单文件工具能在裸 Alpine 上运行。
+- 产出：一个运行中的 `mysql:8` 容器（服务名 `mysql`，网络 `db-ops-test-net`，数据库 `testdb`，root 密码 `rootpass`），首次启动时自动生成自签名 TLS 证书，并预置一套覆盖以下内容的 schema：一个带 `VIRTUAL` 生成列的表、一个带 `STORED` 生成列的表、一个 `BLOB` 字段、一个视图、一个存储过程、一个触发器和一个事件。任务 5 通过 `docker run --network db-ops-test-net -v <repo>:/work -w /work alpine:latest sh -c "./my-ops.sh ..."` 连接它，证明单文件工具能在裸 Alpine 上运行。
 
 - [ ] **步骤 1：编写种子 schema**
 
@@ -1142,7 +1142,7 @@ networks:
 
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
       MYSQL_DATABASE: testdb
@@ -1170,7 +1170,7 @@ docker compose up -d --wait
 
 运行：
 ```bash
-docker run --rm --network db-ops-test-net alpine:3.19 sh -c "
+docker run --rm --network db-ops-test-net alpine:latest sh -c "
   apk add --no-cache mariadb-client >/dev/null &&
   mysql --ssl-mode=REQUIRED --ssl-verify-server-cert=0 \
     -h mysql -P 3306 -uroot -prootpass testdb \
@@ -1227,7 +1227,7 @@ teardown_file() {
 run_in_alpine() {
   docker run --rm --network db-ops-test-net \
     -v "$BATS_TEST_DIRNAME/../..":/work -w /work \
-    alpine:3.19 sh -c "$1"
+    alpine:latest sh -c "$1"
 }
 
 query_testdb() {
