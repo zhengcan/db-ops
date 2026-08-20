@@ -1,5 +1,5 @@
 #!/bin/sh
-# db-ops.sh - single-file MySQL backup/restore tool for bare Alpine.
+# my-ops.sh - single-file MySQL backup/restore tool for bare Alpine.
 set -eu
 
 # ===================== Config defaults =====================
@@ -61,6 +61,20 @@ load_config() {
   fi
 }
 
+# Rejects identifiers (database/table/column names) that contain a backtick
+# character. MySQL identifiers quoted with backticks require any embedded
+# backtick to be doubled; rather than trying to escape/reconstruct that, we
+# simply refuse any identifier containing a backtick outright. A legitimate
+# database/table/column name in normal operational use will essentially
+# never contain one, so rejecting it is safe and closes off a class of SQL
+# injection where a crafted name could break out of the backtick-quoted
+# identifier context.
+validate_identifier() {
+  case "$1" in
+    *'`'*) die "Invalid identifier (contains backtick): $1" ;;
+  esac
+}
+
 split_csv() {
   printf '%s\n' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | { grep -v '^$' || true; }
 }
@@ -71,7 +85,23 @@ confirm() {
     return 0
   fi
   printf '%s [y/N] ' "$msg"
-  read -r reply
+  # Read the answer from the controlling terminal rather than the script's
+  # inherited stdin. This is critical when confirm() is called from inside a
+  # loop that is itself reading a list of items from stdin via a pipe (e.g.
+  # `cmd_restore`'s `printf '%s\n' "$databases" | while read -r db; do ...`):
+  # if confirm() read from the same stdin, its `read -r reply` would consume
+  # the *next* database name off the pipe instead of the user's actual
+  # keystroke, silently corrupting the loop. `/dev/tty` is not affected by
+  # that pipe, so it is unambiguously "what the interactive user typed".
+  #
+  # DB_OPS_TEST_CONFIRM_STDIN=1 lets unit tests simulate answers by piping
+  # into stdin (there is no real tty available in a test/CI sandbox); it
+  # must never be set in production use.
+  if [ "${DB_OPS_TEST_CONFIRM_STDIN:-0}" = "1" ]; then
+    read -r reply
+  else
+    read -r reply < /dev/tty
+  fi
   case "$reply" in
     y|Y|yes|YES) return 0 ;;
     *) return 1 ;;
@@ -182,6 +212,19 @@ resolve_target_databases() {
   fi
 
   [ -n "$(printf '%s' "$target_databases" | tr -d '[:space:]')" ] || die "No databases to process"
+
+  # Validate every database name before returning. Deliberately done with a
+  # `for` loop over word-split $target_databases (not `... | while read`)
+  # so that a validate_identifier failure (which calls die -> exit) actually
+  # terminates the whole script instead of only a pipeline subshell.
+  _old_ifs="$IFS"
+  IFS='
+'
+  for _db in $target_databases; do
+    [ -n "$_db" ] || continue
+    validate_identifier "$_db"
+  done
+  IFS="$_old_ifs"
 
   printf '%s\n' "$target_databases"
 }
@@ -308,6 +351,15 @@ cmd_restore() {
 
   databases="$(split_csv "$DB_DATABASE")"
 
+  _old_ifs="$IFS"
+  IFS='
+'
+  for _db in $databases; do
+    [ -n "$_db" ] || continue
+    validate_identifier "$_db"
+  done
+  IFS="$_old_ifs"
+
   printf '%s\n' "$databases" | while IFS= read -r db; do
     [ -n "$db" ] || continue
     archive="$BACKUP_DIR/${db}.sql.gz"
@@ -357,6 +409,8 @@ restore_one_database() {
   : > "$map_file"
   while IFS="$(printf '\t')" read -r tbl col coltype; do
     [ -n "$tbl" ] || continue
+    validate_identifier "$tbl"
+    validate_identifier "$col"
     printf '%s\t%s\n' "$tbl" "$col" >> "$map_file"
     db_mysql "$db" -e "ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}_tmp\` ${coltype} NULL;" < /dev/null \
       || die "Failed to add temp column ${col}_tmp on ${tbl}"
@@ -385,7 +439,7 @@ restore_one_database() {
 # ===================== usage & main (placeholder, extended in later tasks) =====================
 usage() {
   cat <<'EOF'
-Usage: db-ops.sh <command> [options]
+Usage: my-ops.sh <command> [options]
 
 Commands:
   info      Show connection status and object overview

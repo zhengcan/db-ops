@@ -67,13 +67,21 @@ setup() {
 }
 
 @test "confirm returns success when user answers y" {
-  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; FORCE=0; echo y | confirm "Proceed?"'
+  run bash -c 'export DB_OPS_TEST=1 DB_OPS_TEST_CONFIRM_STDIN=1; . "'"$SCRIPT"'"; FORCE=0; echo y | confirm "Proceed?"'
   [ "$status" -eq 0 ]
 }
 
 @test "confirm returns failure when user answers n" {
-  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; FORCE=0; echo n | confirm "Proceed?"'
+  run bash -c 'export DB_OPS_TEST=1 DB_OPS_TEST_CONFIRM_STDIN=1; . "'"$SCRIPT"'"; FORCE=0; echo n | confirm "Proceed?"'
   [ "$status" -eq 1 ]
+}
+
+@test "confirm reads from /dev/tty (not stdin) when not in test-stdin mode" {
+  # Even though the outer pipe supplies "y" on stdin, confirm() must not
+  # consume it; without a real controlling terminal available, reading from
+  # /dev/tty should fail, proving stdin is not being aliased into confirm().
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; FORCE=0; echo y | confirm "Proceed?"' </dev/null
+  [ "$status" -ne 0 ]
 }
 
 @test "db_mysqladmin invokes mysqladmin with required SSL flags and connection args" {
@@ -144,4 +152,24 @@ setup() {
   grep -q "apk add --no-cache mariadb-client mariadb-connector-c gzip gawk" "$STUB_LOG"
   [ -x "$fake_bin/mysql" ]
   rm -rf "$fake_bin" "$STUB_LOG"
+}
+
+@test "validate_identifier accepts alphanumeric and underscore names" {
+  run validate_identifier "my_db_1"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate_identifier rejects identifiers containing a backtick" {
+  run validate_identifier 'evil`; DROP DATABASE mysql; --'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ERROR"* ]]
+  [[ "$output" == *"backtick"* ]]
+}
+
+@test "resolve_target_databases dies when --database contains a backtick" {
+  DB_DATABASE='ok_db,evil`db'
+  DB_ALL_DATABASES=0
+  run resolve_target_databases
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"backtick"* ]]
 }
