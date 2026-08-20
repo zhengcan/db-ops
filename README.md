@@ -53,6 +53,9 @@ DB_PASSWORD=secret
 命令行参数始终会覆盖配置文件中的同名值。建议通过 `DB_PASSWORD` 环境变量传递密码，
 而不是 `--password` 参数或配置文件，以避免密码留存在 shell 历史或磁盘上。
 
+**注意：`--config` 指定的文件是直接以 shell 脚本方式 `source` 进来的，等同于可执行
+shell 代码，请勿使用不可信来源的配置文件。**
+
 ## TLS
 
 所有连接均使用 `--ssl --skip-ssl-verify-server-cert`：

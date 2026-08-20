@@ -168,6 +168,41 @@
 - 脚本假定运行环境可直接网络访问 MySQL 服务（端口转发 / NodePort /
   ClusterIP 均可，只要网络可达），不依赖 `kubectl exec` 或作为 k8s
   Job/CronJob 运行
+- `--config <file>` 是通过 shell `.` (source) 直接执行的，等价于在当前
+  shell 中执行任意代码，而不是一个受限的 KEY=VALUE 解析器。这一设计假定
+  配置文件来源可信（本地文件系统、由运维人员自己维护）；如果配置文件路径
+  可能来自不可信输入（例如由外部系统拼接生成、或来自用户可控的上传内容），
+  这里就是一个任意代码执行点。本次修复不改变这一实现方式（保持 shell 原生、
+  零依赖），仅将其记录为已知的信任边界。
+- `mysqldump --routines --triggers --events` 默认会在存储过程/触发器/事件
+  的 DDL 中带上 `DEFINER=` 子句。恢复到目标服务器时，如果该 DEFINER 对应
+  的用户在目标服务器上不存在，创建这些对象通常仍会成功（MySQL/MariaDB
+  允许 DEFINER 指向不存在的用户），但后续以该 DEFINER 身份执行这些对象时
+  会因权限或用户不存在而失败。因此推荐使用具有足够权限（通常是
+  root/SUPER，或明确拥有 `SET USER` / `CREATE ROUTINE` 等相关权限）的账号
+  执行 restore，且在跨环境迁移时留意 DEFINER 用户是否需要在目标库上同步
+  创建。
+- 中途中断（Ctrl-C/SIGTERM/进程意外崩溃）会在远程数据库上留下结构性的
+  半成品状态，`trap ... EXIT` 只能清理本地临时文件，无法回滚已经发给
+  MySQL 服务器的 DDL/DML：
+  - 如果中断发生在 `DROP DATABASE` 和 `CREATE DATABASE` 之间，目标库会
+    处于"已删除但未重建"的状态，需要人工重新执行 restore。
+  - 如果中断发生在 `ADD COLUMN <col>__tmp` 和对应的
+    `DROP COLUMN <col>__tmp` 之间，目标表上会永久遗留一个 `__tmp` 临时列。
+    可以用以下查询检测某个库上是否有遗留的临时列：
+    ```sql
+    SELECT TABLE_NAME, COLUMN_NAME
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA='<db>' AND COLUMN_NAME LIKE '%__tmp';
+    ```
+    确认是遗留物（而非业务上刻意使用了这个命名）后，手动执行
+    `ALTER TABLE <table> DROP COLUMN <column>__tmp;` 清理即可。
+- `GENCOL_AWK_PROGRAM` 依赖 `mysqldump --complete-insert` 输出格式的一个
+  隐式假设：INSERT 语句列名列表中的分隔符严格是 `", "`（逗号+一个空格）。
+  这是当前使用的 mariadb-client 版本的实际输出格式；如果未来版本的
+  mysqldump/mariadb-dump 改变了这一格式，或者列名本身包含字面逗号
+  （MySQL 标识符语法上允许但实践中极为罕见），列名列表的解析会错位。这是
+  已知局限，不在本次修复范围内。
 
 ## 验证计划
 
