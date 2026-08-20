@@ -164,3 +164,48 @@ EOF
   grep -q "DROP DATABASE IF EXISTS \`gencoldb\`" "$STUB_LOG"
   grep -q "CREATE DATABASE \`gencoldb\`" "$STUB_LOG"
 }
+
+@test "restore explicitly sets FOREIGN_KEY_CHECKS/UNIQUE_CHECKS/AUTOCOMMIT itself rather than relying on mysqldump's @OLD_ bookkeeping" {
+  # Realistic mysqldump global header: these two compound lines both save
+  # the previous value into an @OLD_ variable AND flip the session setting
+  # to make dependency-order-agnostic restore possible. They must still be
+  # stripped from the piped SQL (same as before), but the underlying
+  # session settings must now be established by our own explicit SET
+  # statements instead of depending on the (cross-connection-broken)
+  # mysqldump bookkeeping.
+  cat > "$WORK_DIR/fk.sql" <<'EOF'
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+CREATE TABLE `categories` (`id` INT PRIMARY KEY);
+CREATE TABLE `products_fk` (`id` INT PRIMARY KEY, `category_id` INT, FOREIGN KEY (`category_id`) REFERENCES `categories`(`id`));
+INSERT INTO `categories` (`id`) VALUES (1);
+INSERT INTO `products_fk` (`id`, `category_id`) VALUES (1,1);
+EOF
+  gzip -c "$WORK_DIR/fk.sql" > "$WORK_DIR/fk_backup.sql.gz"
+  mkdir -p "$WORK_DIR/backup_20260101_000000"
+  cp "$WORK_DIR/fk_backup.sql.gz" "$WORK_DIR/backup_20260101_000000/fkdb.sql.gz"
+
+  STDIN_CAPTURE="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" STUB_STDIN_CAPTURE="$STDIN_CAPTURE" \
+    MYSQL_GENCOL_RESPONSE="" \
+    bash -c "cd '$WORK_DIR' && '$SCRIPT' restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --database fkdb --force"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Restored database: fkdb"* ]]
+
+  # The mysqldump @OLD_ bookkeeping lines must still be stripped.
+  ! grep -Eq '(SET @OLD_[A-Za-z_]+=|SET [A-Za-z_]+=@OLD_[A-Za-z_]+)' "$STDIN_CAPTURE"
+
+  # But the actual content piped into mysql must contain our own explicit
+  # FOREIGN_KEY_CHECKS=0 (and friends) setting, proving the script no
+  # longer relies on mysqldump's cross-connection-broken bookkeeping.
+  grep -q "SET FOREIGN_KEY_CHECKS=0" "$STDIN_CAPTURE"
+  grep -q "SET UNIQUE_CHECKS=0" "$STDIN_CAPTURE"
+  grep -q "SET AUTOCOMMIT=0" "$STDIN_CAPTURE"
+
+  # Legitimate content must survive.
+  grep -q "CREATE TABLE \`categories\`" "$STDIN_CAPTURE"
+  grep -q "CREATE TABLE \`products_fk\`" "$STDIN_CAPTURE"
+  grep -q "INSERT INTO \`products_fk\`" "$STDIN_CAPTURE"
+
+  rm -f "$STDIN_CAPTURE"
+}

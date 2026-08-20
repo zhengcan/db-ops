@@ -341,7 +341,8 @@ restore_one_database() {
     { print >> schema_out }
   ' "$tmp_sql_filtered"
 
-  db_mysql "$db" < "$schema_sql" || die "Failed to import schema for database: $db"
+  { printf '%s\n' "SET FOREIGN_KEY_CHECKS=0; SET UNIQUE_CHECKS=0; SET AUTOCOMMIT=0;"; cat "$schema_sql"; printf '%s\n' "COMMIT;"; } \
+    | db_mysql "$db" || die "Failed to import schema for database: $db"
 
   map_raw="$(mktemp)"
   map_file="$(mktemp)"
@@ -364,7 +365,8 @@ restore_one_database() {
   if [ -s "$map_file" ]; then
     filtered_data_sql="$(mktemp)"
     gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql" > "$filtered_data_sql"
-    db_mysql "$db" < "$filtered_data_sql" || die "Failed to import data for database: $db"
+    { printf '%s\n' "SET FOREIGN_KEY_CHECKS=0; SET UNIQUE_CHECKS=0; SET AUTOCOMMIT=0;"; cat "$filtered_data_sql"; printf '%s\n' "COMMIT;"; } \
+      | db_mysql "$db" || die "Failed to import data for database: $db"
     rm -f "$filtered_data_sql"
 
     while IFS="$(printf '\t')" read -r tbl col; do
@@ -373,7 +375,8 @@ restore_one_database() {
         || die "Failed to drop temp column ${col}_tmp on ${tbl}"
     done < "$map_file"
   else
-    db_mysql "$db" < "$data_sql" || die "Failed to import data for database: $db"
+    { printf '%s\n' "SET FOREIGN_KEY_CHECKS=0; SET UNIQUE_CHECKS=0; SET AUTOCOMMIT=0;"; cat "$data_sql"; printf '%s\n' "COMMIT;"; } \
+      | db_mysql "$db" || die "Failed to import data for database: $db"
   fi
 
   rm -f "$tmp_sql" "$tmp_sql_filtered" "$schema_sql" "$data_sql" "$map_file" "$map_raw"
