@@ -18,8 +18,17 @@ case "$args" in
     ;;
   *)
     # DROP/CREATE DATABASE, ALTER TABLE, or schema/data import via stdin:
-    # just drain stdin (if any) and succeed.
-    cat >/dev/null 2>&1 || true
+    # drain stdin (if any) and succeed. If STUB_STDIN_CAPTURE is set,
+    # also append the stdin content there (with a separator) so tests
+    # can assert on what was actually piped into `mysql`.
+    if [ -n "${STUB_STDIN_CAPTURE:-}" ]; then
+      {
+        echo "----- STDIN CALL: $args -----"
+        cat
+      } >> "$STUB_STDIN_CAPTURE" 2>/dev/null || true
+    else
+      cat >/dev/null 2>&1 || true
+    fi
     exit 0
     ;;
 esac

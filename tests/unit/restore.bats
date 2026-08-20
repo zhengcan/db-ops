@@ -81,6 +81,77 @@ run_restore() {
   grep -q "DROP COLUMN \`name_upper_tmp\`" "$STUB_LOG"
 }
 
+@test "restore strips mysqldump SET @OLD_ session bookkeeping so cross-connection restore doesn't see NULL vars" {
+  # Mimics real mysqldump output structure: first table has NO data rows
+  # (its SAVE @OLD_AUTOCOMMIT happens before the first literal "INSERT INTO"
+  # line anywhere in the file, so the naive awk splitter would misclassify
+  # it into schema_sql, while the matching RESTORE line for the *next*
+  # table's wrapper ends up in data_sql -- a completely separate mysql
+  # connection that never saw the SET @OLD_AUTOCOMMIT assignment).
+  cat > "$WORK_DIR/realistic.sql" <<'EOF'
+CREATE TABLE `empty_table` (`id` INT);
+SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT, @@AUTOCOMMIT=0;
+LOCK TABLES `empty_table` WRITE;
+UNLOCK TABLES;
+SET AUTOCOMMIT=@OLD_AUTOCOMMIT;
+CREATE TABLE `nonempty_table` (`id` INT, `name` VARCHAR(50));
+SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT, @@AUTOCOMMIT=0;
+LOCK TABLES `nonempty_table` WRITE;
+INSERT INTO `nonempty_table` (`id`, `name`) VALUES (1,'hi');
+UNLOCK TABLES;
+SET AUTOCOMMIT=@OLD_AUTOCOMMIT;
+EOF
+  gzip -c "$WORK_DIR/realistic.sql" > "$WORK_DIR/realistic_backup.sql.gz"
+  mkdir -p "$WORK_DIR/backup_20260101_000000"
+  cp "$WORK_DIR/realistic_backup.sql.gz" "$WORK_DIR/backup_20260101_000000/realisticdb.sql.gz"
+
+  STDIN_CAPTURE="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" STUB_STDIN_CAPTURE="$STDIN_CAPTURE" \
+    MYSQL_GENCOL_RESPONSE="" \
+    bash -c "cd '$WORK_DIR' && '$SCRIPT' restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --database realisticdb --force"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Restored database: realisticdb"* ]]
+
+  # (a) All SAVE/RESTORE bookkeeping lines must be gone from what was
+  # actually piped into mysql (both the schema and data imports).
+  ! grep -Eq '(SET @OLD_[A-Za-z_]+=|SET [A-Za-z_]+=@OLD_[A-Za-z_]+)' "$STDIN_CAPTURE"
+
+  # (b) Legitimate content must survive: table definitions and the real
+  # INSERT statement must still be present somewhere in the captured
+  # stdin streams.
+  grep -q "CREATE TABLE \`empty_table\`" "$STDIN_CAPTURE"
+  grep -q "CREATE TABLE \`nonempty_table\`" "$STDIN_CAPTURE"
+  grep -q "INSERT INTO \`nonempty_table\`" "$STDIN_CAPTURE"
+
+  rm -f "$STDIN_CAPTURE"
+}
+
+@test "restore does not strip legitimate @saved_cs_client-style SET statements" {
+  cat > "$WORK_DIR/saved_cs.sql" <<'EOF'
+CREATE TABLE `t1` (`id` INT);
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET character_set_client = utf8mb4 */ ;
+CREATE VIEW `v1` AS SELECT id FROM t1;
+/*!50003 SET character_set_client = @saved_cs_client */ ;
+INSERT INTO `t1` (`id`) VALUES (1);
+EOF
+  gzip -c "$WORK_DIR/saved_cs.sql" > "$WORK_DIR/saved_cs_backup.sql.gz"
+  mkdir -p "$WORK_DIR/backup_20260101_000000"
+  cp "$WORK_DIR/saved_cs_backup.sql.gz" "$WORK_DIR/backup_20260101_000000/savedcsdb.sql.gz"
+
+  STDIN_CAPTURE="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" STUB_STDIN_CAPTURE="$STDIN_CAPTURE" \
+    MYSQL_GENCOL_RESPONSE="" \
+    bash -c "cd '$WORK_DIR' && '$SCRIPT' restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --database savedcsdb --force"
+  [ "$status" -eq 0 ]
+
+  grep -q "@saved_cs_client" "$STDIN_CAPTURE"
+  grep -q "CREATE VIEW \`v1\`" "$STDIN_CAPTURE"
+  grep -q "INSERT INTO \`t1\`" "$STDIN_CAPTURE"
+
+  rm -f "$STDIN_CAPTURE"
+}
+
 @test "restore processes every database in a comma-separated --database list" {
   run run_restore env MYSQL_GENCOL_RESPONSE="" \
     "$SCRIPT" restore --host h --port 3306 --user u --password p \

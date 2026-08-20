@@ -127,8 +127,8 @@ db_mysql() {
     "--host=${DB_HOST}" \
     "--port=${DB_PORT}" \
     "--user=${DB_USER}" \
-    "--ssl-mode=REQUIRED" \
-    "--ssl-verify-server-cert=0" \
+    "--ssl" \
+    "--skip-ssl-verify-server-cert" \
     "$@"
   mysql "$@"
 }
@@ -140,8 +140,8 @@ db_mysqldump() {
     "--host=${DB_HOST}" \
     "--port=${DB_PORT}" \
     "--user=${DB_USER}" \
-    "--ssl-mode=REQUIRED" \
-    "--ssl-verify-server-cert=0" \
+    "--ssl" \
+    "--skip-ssl-verify-server-cert" \
     "$@"
   mysqldump "$@"
 }
@@ -153,8 +153,8 @@ db_mysqladmin() {
     "--host=${DB_HOST}" \
     "--port=${DB_PORT}" \
     "--user=${DB_USER}" \
-    "--ssl-mode=REQUIRED" \
-    "--ssl-verify-server-cert=0" \
+    "--ssl" \
+    "--skip-ssl-verify-server-cert" \
     "$@"
   mysqladmin "$@"
 }
@@ -330,13 +330,16 @@ restore_one_database() {
   db_mysql -e "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`;" < /dev/null \
     || die "Failed to (re)create database: $db"
 
+  tmp_sql_filtered="$(mktemp)"
+  grep -Ev '(SET @OLD_[A-Za-z_]+=|SET [A-Za-z_]+=@OLD_[A-Za-z_]+)' "$tmp_sql" > "$tmp_sql_filtered"
+
   schema_sql="$(mktemp)"
   data_sql="$(mktemp)"
   awk -v schema_out="$schema_sql" -v data_out="$data_sql" '
     /^INSERT INTO / { in_insert = 1 }
     in_insert { print >> data_out; next }
     { print >> schema_out }
-  ' "$tmp_sql"
+  ' "$tmp_sql_filtered"
 
   db_mysql "$db" < "$schema_sql" || die "Failed to import schema for database: $db"
 
@@ -373,7 +376,7 @@ restore_one_database() {
     db_mysql "$db" < "$data_sql" || die "Failed to import data for database: $db"
   fi
 
-  rm -f "$tmp_sql" "$schema_sql" "$data_sql" "$map_file" "$map_raw"
+  rm -f "$tmp_sql" "$tmp_sql_filtered" "$schema_sql" "$data_sql" "$map_file" "$map_raw"
 }
 
 # ===================== usage & main (placeholder, extended in later tasks) =====================
