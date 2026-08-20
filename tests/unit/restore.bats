@@ -53,7 +53,7 @@ run_restore() {
 }
 
 @test "restore aborts without --force when the user declines confirmation" {
-  run run_restore bash -c "echo n | \"$SCRIPT\" restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --database plaindb"
+  run run_restore env DB_OPS_TEST_CONFIRM_STDIN=1 bash -c "echo n | \"$SCRIPT\" restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --database plaindb"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Aborted by user"* ]]
 }
