@@ -1,5 +1,14 @@
 #!/usr/bin/env bats
 
+# NOTE: These three @test cases share one long-lived MySQL container and
+# Alpine runner container for the whole file (see setup_file/teardown_file)
+# instead of a fresh environment per test, to avoid repeatedly paying the
+# container-startup cost. This means they have a real ordering dependency:
+# test 1 leaves an extra "Gizmo" row in `products`, and test 3 reads its
+# expected row count dynamically rather than hardcoding it for exactly this
+# reason. Do not run these tests out of order or in parallel; add new tests
+# to the end and re-derive any row-count expectations dynamically.
+
 ALPINE_CONTAINER="my-ops-e2e-runner"
 
 setup_file() {
@@ -19,6 +28,10 @@ setup_file() {
   docker exec "$ALPINE_CONTAINER" mkdir -p /work
   docker cp "$BATS_TEST_DIRNAME/../../my-ops.sh" "$ALPINE_CONTAINER:/work/my-ops.sh"
   docker exec "$ALPINE_CONTAINER" sh -c "
+    # Some networks (e.g. mainland China) cannot reach or TLS-verify
+    # dl-cdn.alpinelinux.org reliably; mirrors.aliyun.com is a stable
+    # mirror that works there. If your network reaches the official CDN
+    # fine, this line is a harmless no-op to remove.
     sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
     apk add --no-cache mariadb-client mariadb-connector-c gzip gawk >/dev/null
     chmod +x /work/my-ops.sh
