@@ -1,0 +1,131 @@
+#!/usr/bin/env bats
+
+ALPINE_CONTAINER="my-ops-e2e-runner"
+
+setup_file() {
+  cd "$BATS_TEST_DIRNAME"
+  docker compose up -d --wait
+
+  # Seed schema (docker-entrypoint-initdb.d bind mount is unreliable on
+  # some hosts; pipe it in explicitly instead).
+  docker compose exec -T mysql mysql -uroot -prootpass testdb < init.sql
+
+  # Long-lived Alpine container to run my-ops.sh in, avoiding bind-mount
+  # reliability issues: copy the script in once via `docker cp`.
+  docker rm -f "$ALPINE_CONTAINER" >/dev/null 2>&1 || true
+  docker create --name "$ALPINE_CONTAINER" --network db-ops-test-net \
+    alpine:latest sh -c "sleep 3600" >/dev/null
+  docker start "$ALPINE_CONTAINER" >/dev/null
+  docker exec "$ALPINE_CONTAINER" mkdir -p /work
+  docker cp "$BATS_TEST_DIRNAME/../../my-ops.sh" "$ALPINE_CONTAINER:/work/my-ops.sh"
+  docker exec "$ALPINE_CONTAINER" sh -c "
+    sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+    apk add --no-cache mariadb-client mariadb-connector-c gzip gawk >/dev/null
+    chmod +x /work/my-ops.sh
+  "
+}
+
+teardown_file() {
+  cd "$BATS_TEST_DIRNAME"
+  docker rm -f "$ALPINE_CONTAINER" >/dev/null 2>&1 || true
+  docker compose down -v
+}
+
+run_in_alpine() {
+  docker exec -w /work "$ALPINE_CONTAINER" sh -c "$1"
+}
+
+query_testdb() {
+  run_in_alpine "mysql --ssl --skip-ssl-verify-server-cert -h mysql -P 3306 -uroot -prootpass -N -B -e \"$1\" testdb 2>/dev/null"
+}
+
+latest_backup_dir() {
+  # $1: optional subdirectory to look under (relative to /work), default /work itself
+  base="${1:-.}"
+  run_in_alpine "ls -d ${base}/backup_* | tail -1"
+}
+
+@test "end to end: info, backup, restore reproduce all object types and data" {
+  run run_in_alpine "rm -rf backup_*; ./my-ops.sh info --host mysql --port 3306 --user root --password rootpass --database testdb"
+  [ "$status" -eq 0 ]
+
+  run run_in_alpine "./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
+  [ "$status" -eq 0 ]
+  backup_dir="$(latest_backup_dir)"
+
+  run query_testdb "DROP DATABASE testdb;"
+  [ "$status" -eq 0 ]
+
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
+  [ "$status" -eq 0 ]
+
+  run query_testdb "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='testdb' AND TABLE_TYPE='BASE TABLE';"
+  [ "$output" = "2" ]
+
+  run query_testdb "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='testdb' AND TABLE_TYPE='VIEW';"
+  [ "$output" = "1" ]
+
+  run query_testdb "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='testdb';"
+  [ "$output" = "1" ]
+
+  run query_testdb "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='testdb';"
+  [ "$output" = "1" ]
+
+  run query_testdb "SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='testdb';"
+  [ "$output" = "1" ]
+
+  run query_testdb "CALL add_product('Gizmo', 15.00);"
+  [ "$status" -eq 0 ]
+  run query_testdb "SELECT COUNT(*) FROM audit_log WHERE message LIKE '%Gizmo%';"
+  [ "$output" = "1" ]
+
+  run_in_alpine "rm -rf '${backup_dir}'"
+}
+
+@test "end to end: generated columns and blobs round-trip, --dir works, no _tmp columns remain" {
+  run query_testdb "SELECT id, price_with_tax, name_upper, HEX(thumbnail) FROM products ORDER BY id;"
+  before_output="$output"
+
+  run run_in_alpine "rm -rf backup_* custom_backups; mkdir -p custom_backups; ./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb --dir custom_backups"
+  [ "$status" -eq 0 ]
+  backup_dir="$(latest_backup_dir custom_backups)"
+
+  run query_testdb "DROP TABLE IF EXISTS products;"
+  [ "$status" -eq 0 ]
+
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
+  [ "$status" -eq 0 ]
+
+  run query_testdb "SELECT id, price_with_tax, name_upper, HEX(thumbnail) FROM products ORDER BY id;"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$before_output" ]
+
+  run query_testdb "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='testdb' AND COLUMN_NAME LIKE '%_tmp';"
+  [ "$output" = "0" ]
+
+  run_in_alpine "rm -rf custom_backups"
+}
+
+@test "restore is idempotent when run twice against the same backup" {
+  run query_testdb "SELECT COUNT(*) FROM products;"
+  [ "$status" -eq 0 ]
+  expected_count="$output"
+
+  run run_in_alpine "rm -rf backup_*; ./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
+  [ "$status" -eq 0 ]
+  backup_dir="$(latest_backup_dir)"
+
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
+  [ "$status" -eq 0 ]
+
+  run query_testdb "SELECT COUNT(*) FROM products;"
+  [ "$output" = "$expected_count" ]
+
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
+  [ "$status" -eq 0 ]
+
+  run query_testdb "SELECT COUNT(*) FROM products;"
+  [ "$output" = "$expected_count" ]
+
+  run_in_alpine "rm -rf '${backup_dir}'"
+}
