@@ -123,18 +123,25 @@
    `COLUMN_TYPE`
 5. 对每个生成列 `A`：
    ```
-   ALTER TABLE tbl ADD COLUMN A_tmp <COLUMN_TYPE> NULL;
+   ALTER TABLE tbl ADD COLUMN A__tmp <COLUMN_TYPE> NULL;
    ```
-   纯新增操作，不触碰原生成列 `A` 本身，索引/唯一约束/外键均不受影响
+   纯新增操作，不触碰原生成列 `A` 本身，索引/唯一约束/外键均不受影响。
+   临时列使用双下划线 `__tmp` 后缀（而非单下划线 `_tmp`）以进一步降低
+   与用户已有列名冲突的概率。生成列的映射以 `(表名, 列名)` 为键（而非
+   仅列名）区分，因此不同表各自拥有名称相同的生成列（例如
+   `products.total` 和 `inventory.total` 都是生成列）时，两者的
+   `__tmp` 暂存与清理互不影响、不会相互覆盖或碰撞；已通过单元测试
+   （`tests/unit/gencol_filter.bats`、`tests/unit/restore.bats` 中
+   "same-named generated column" 相关用例）验证。
 6. 用 `gawk` 对 data 部分做文本替换：仅在 `INSERT INTO `tbl` (...)` 的
-   列名列表部分，将生成列名 `A` 替换为 `A_tmp`；不触碰 `VALUES` 部分
+   列名列表部分，将生成列名 `A` 替换为 `A__tmp`；不触碰 `VALUES` 部分
    （避免解析转义字符串、十六进制 blob 字面量的复杂度和风险）
-7. 导入替换后的 data 部分 → 数据成功写入 `A_tmp`；生成列 `A` 由数据库
-   根据同一行内其他真实列的数据自动计算，与 `A_tmp` 无关
+7. 导入替换后的 data 部分 → 数据成功写入 `A__tmp`；生成列 `A` 由数据库
+   根据同一行内其他真实列的数据自动计算，与 `A__tmp` 无关
 8. 清理：对每个临时列执行
    ```
-   ALTER TABLE tbl DROP COLUMN A_tmp;
-   ALTER TABLE tbl DROP COLUMN B_tmp;
+   ALTER TABLE tbl DROP COLUMN A__tmp;
+   ALTER TABLE tbl DROP COLUMN B__tmp;
    ```
    删除所有临时列。**实际实现采用每列单独一条 ALTER 语句而非批量合并**：
    实现更简单直观（新增/清理逻辑对称，都是"遍历 map 文件，逐列发一条
@@ -156,7 +163,7 @@
 ## 已知局限
 
 - 生成列上如存在索引/唯一约束/外键，本设计不需要处理索引重建问题——
-  因为方案本身不改动生成列 `A`，只新增独立的 `A_tmp` 临时列，索引天然
+  因为方案本身不改动生成列 `A`，只新增独立的 `A__tmp` 临时列，索引天然
   不受影响
 - 脚本假定运行环境可直接网络访问 MySQL 服务（端口转发 / NodePort /
   ClusterIP 均可，只要网络可达），不依赖 `kubectl exec` 或作为 k8s
@@ -180,5 +187,5 @@
    - 视图、存储过程/函数、触发器、事件正确恢复
    - BLOB 二进制字段内容恢复后与源数据逐字节一致（如用 `MD5()` 或
      `CHECKSUM TABLE` 比对）
-   - 恢复后表中不residual 遗留任何 `_tmp` 临时列
+   - 恢复后表中不residual 遗留任何 `__tmp` 临时列
 5. 重复执行 backup → restore 验证幂等性（多次恢复到同一状态不报错）

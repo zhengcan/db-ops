@@ -20,9 +20,21 @@ INSERT INTO `products` (`id`, `name`, `price`, `price_with_tax`, `name_upper`) V
 EOF
   gzip -c "$WORK_DIR/gencol.sql" > "$WORK_DIR/gencol_backup.sql.gz"
 
+  # Two different tables that both have a generated column with the SAME
+  # name ("total"), to verify generated-column handling is scoped per
+  # table and not globally by column name.
+  cat > "$WORK_DIR/multi_table_gencol.sql" <<'EOF'
+CREATE TABLE `products` (`id` INT, `qty` INT, `unit_price` DECIMAL(10,2), `total` DECIMAL(10,2));
+CREATE TABLE `inventory` (`id` INT, `count` INT, `weight` DECIMAL(10,2), `total` DECIMAL(10,2));
+INSERT INTO `products` (`id`, `qty`, `unit_price`, `total`) VALUES (1,2,5.00,10.00);
+INSERT INTO `inventory` (`id`, `count`, `weight`, `total`) VALUES (1,3,4.00,12.00);
+EOF
+  gzip -c "$WORK_DIR/multi_table_gencol.sql" > "$WORK_DIR/multi_table_gencol_backup.sql.gz"
+
   mkdir -p "$WORK_DIR/backup_20260101_000000"
   cp "$WORK_DIR/plain_backup.sql.gz" "$WORK_DIR/backup_20260101_000000/plaindb.sql.gz"
   cp "$WORK_DIR/gencol_backup.sql.gz" "$WORK_DIR/backup_20260101_000000/gencoldb.sql.gz"
+  cp "$WORK_DIR/multi_table_gencol_backup.sql.gz" "$WORK_DIR/backup_20260101_000000/multitabledb.sql.gz"
 }
 
 teardown() {
@@ -66,19 +78,47 @@ run_restore() {
   [[ "$output" == *"Restored database: plaindb"* ]]
   grep -q "DROP DATABASE IF EXISTS \`plaindb\`" "$STUB_LOG"
   grep -q "CREATE DATABASE \`plaindb\`" "$STUB_LOG"
-  ! grep -q "_tmp" "$STUB_LOG"
+  ! grep -q "__tmp" "$STUB_LOG"
 }
 
-@test "restore stages generated columns through _tmp and cleans them up" {
+@test "restore stages generated columns through __tmp and cleans them up" {
   run run_restore env MYSQL_GENCOL_RESPONSE="$(printf 'products\tprice_with_tax\tdecimal(10,2)\nproducts\tname_upper\tvarchar(100)')" \
     "$SCRIPT" restore --host h --port 3306 --user u --password p \
     --dir backup_20260101_000000 --database gencoldb --force
   [ "$status" -eq 0 ]
   [[ "$output" == *"Restored database: gencoldb"* ]]
-  grep -q "ADD COLUMN \`price_with_tax_tmp\` decimal(10,2)" "$STUB_LOG"
-  grep -q "ADD COLUMN \`name_upper_tmp\` varchar(100)" "$STUB_LOG"
-  grep -q "DROP COLUMN \`price_with_tax_tmp\`" "$STUB_LOG"
-  grep -q "DROP COLUMN \`name_upper_tmp\`" "$STUB_LOG"
+  grep -q "ADD COLUMN \`price_with_tax__tmp\` decimal(10,2)" "$STUB_LOG"
+  grep -q "ADD COLUMN \`name_upper__tmp\` varchar(100)" "$STUB_LOG"
+  grep -q "DROP COLUMN \`price_with_tax__tmp\`" "$STUB_LOG"
+  grep -q "DROP COLUMN \`name_upper__tmp\`" "$STUB_LOG"
+}
+
+@test "restore handles two different tables that both have a generated column with the same name" {
+  # `products.total` and `inventory.total` are both generated columns
+  # sharing the identical column name. Staging/redirection must be scoped
+  # per table, not globally by column name, so both get their own
+  # independent total__tmp handling without colliding.
+  run run_restore env MYSQL_GENCOL_RESPONSE="$(printf 'products\ttotal\tdecimal(10,2)\ninventory\ttotal\tdecimal(10,2)')" \
+    STUB_STDIN_CAPTURE="$WORK_DIR/stdin_capture.sql" \
+    "$SCRIPT" restore --host h --port 3306 --user u --password p \
+    --dir backup_20260101_000000 --database multitabledb --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Restored database: multitabledb"* ]]
+
+  # Both tables got their own ADD/DROP COLUMN calls for total__tmp.
+  grep -q "ALTER TABLE \`products\` ADD COLUMN \`total__tmp\` decimal(10,2)" "$STUB_LOG"
+  grep -q "ALTER TABLE \`inventory\` ADD COLUMN \`total__tmp\` decimal(10,2)" "$STUB_LOG"
+  grep -q "ALTER TABLE \`products\` DROP COLUMN \`total__tmp\`" "$STUB_LOG"
+  grep -q "ALTER TABLE \`inventory\` DROP COLUMN \`total__tmp\`" "$STUB_LOG"
+
+  # The actual data import redirected each table's `total` column to
+  # total__tmp independently -- neither table's INSERT should reference
+  # the *other* table's data by name collision, and both INSERT column
+  # lists must show total__tmp (not the untouched `total`).
+  capture="$WORK_DIR/stdin_capture.sql"
+  [ -f "$capture" ]
+  grep -q '`products` (`id`, `qty`, `unit_price`, `total__tmp`) VALUES (1,2,5.00,10.00)' "$capture"
+  grep -q '`inventory` (`id`, `count`, `weight`, `total__tmp`) VALUES (1,3,4.00,12.00)' "$capture"
 }
 
 @test "restore strips mysqldump SET @OLD_ session bookkeeping so cross-connection restore doesn't see NULL vars" {

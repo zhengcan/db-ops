@@ -307,7 +307,7 @@ backup_one_database() {
 
 # Rewrites the INSERT column-name list (never the VALUES clause) so that
 # generated columns (listed in `mapfile`, tab-separated "table<TAB>column")
-# are redirected to <column>_tmp during data import. Invoked as:
+# are redirected to <column>__tmp during data import. Invoked as:
 #   gawk -v mapfile=<path> "$GENCOL_AWK_PROGRAM" data.sql
 GENCOL_AWK_PROGRAM='
 BEGIN {
@@ -337,7 +337,7 @@ BEGIN {
         colname = col
         gsub(/`/, "", colname)
         if ((table SUBSEP colname) in gencols) {
-          col = "`" colname "_tmp`"
+          col = "`" colname "__tmp`"
         }
         out = (i == 1) ? col : out ", " col
       }
@@ -419,8 +419,8 @@ restore_one_database() {
     validate_identifier "$tbl"
     validate_identifier "$col"
     printf '%s\t%s\n' "$tbl" "$col" >> "$map_file"
-    db_mysql "$db" -e "ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}_tmp\` ${coltype} NULL;" < /dev/null \
-      || die "Failed to add temp column ${col}_tmp on ${tbl}"
+    db_mysql "$db" -e "ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}__tmp\` ${coltype} NULL;" < /dev/null \
+      || die "Failed to add temp column ${col}__tmp on ${tbl}"
   done < "$map_raw"
 
   if [ -s "$map_file" ]; then
@@ -432,8 +432,8 @@ restore_one_database() {
 
     while IFS="$(printf '\t')" read -r tbl col; do
       [ -n "$tbl" ] || continue
-      db_mysql "$db" -e "ALTER TABLE \`${tbl}\` DROP COLUMN \`${col}_tmp\`;" < /dev/null \
-        || die "Failed to drop temp column ${col}_tmp on ${tbl}"
+      db_mysql "$db" -e "ALTER TABLE \`${tbl}\` DROP COLUMN \`${col}__tmp\`;" < /dev/null \
+        || die "Failed to drop temp column ${col}__tmp on ${tbl}"
     done < "$map_file"
   else
     { printf '%s\n' "SET FOREIGN_KEY_CHECKS=0; SET UNIQUE_CHECKS=0; SET AUTOCOMMIT=0;"; cat "$data_sql"; printf '%s\n' "COMMIT;"; } \

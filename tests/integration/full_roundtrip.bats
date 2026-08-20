@@ -95,7 +95,7 @@ latest_backup_dir() {
   run_in_alpine "rm -rf '${backup_dir}'"
 }
 
-@test "end to end: generated columns and blobs round-trip, --dir works, no _tmp columns remain" {
+@test "end to end: generated columns and blobs round-trip, --dir works, no __tmp columns remain" {
   run query_testdb "SELECT id, price_with_tax, name_upper, HEX(thumbnail) FROM products ORDER BY id;"
   before_output="$output"
 
@@ -113,7 +113,7 @@ latest_backup_dir() {
   [ "$status" -eq 0 ]
   [ "$output" = "$before_output" ]
 
-  run query_testdb "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='testdb' AND COLUMN_NAME LIKE '%_tmp';"
+  run query_testdb "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='testdb' AND COLUMN_NAME LIKE '%__tmp';"
   [ "$output" = "0" ]
 
   run_in_alpine "rm -rf custom_backups"

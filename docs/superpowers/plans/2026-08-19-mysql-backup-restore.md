@@ -16,7 +16,7 @@
 - 密码绝不能出现在进程参数列表中——始终通过临时的 `--defaults-extra-file`（`[client]` 段）传递，并通过 `trap` 在退出时删除。
 - 备份必须覆盖：所有用户表（DDL+DML）、视图、存储过程/函数、触发器和事件。
 - BLOB/二进制字段必须使用 `--hex-blob` 导出。
-- 生成列（虚拟/存储）本身绝不能被改动（不能对生成列本身执行 `DROP`/`ALTER`）——只使用一个新增的 `<col>_tmp` 暂存列，因此表上的索引/约束不受影响。
+- 生成列（虚拟/存储）本身绝不能被改动（不能对生成列本身执行 `DROP`/`ALTER`）——只使用一个新增的 `<col>__tmp` 暂存列，因此表上的索引/约束不受影响。
 - 备份输出：每次运行生成一个目录 `backup_<YYYYMMDD_HHMMSS>/`，每个数据库一个文件 `<db>.sql.gz`；支持 `--dir <path>` 指定该目录创建在哪个基础路径下（默认当前目录）。
 - 恢复必须显式指定 `--database <db1,db2>` 列表——不支持隐式地"恢复目录中的全部内容"。
 - 恢复对每个数据库都是破坏性操作（`DROP DATABASE IF EXISTS` + `CREATE DATABASE`），除非传入 `--force`，否则需要交互式确认。
@@ -766,7 +766,7 @@ git commit -m "feat: add info and backup subcommands with --dir support"
 
 **接口：**
 - 消费：任务 1 的 `ensure_dependencies`、`check_connection`、`split_csv`、`confirm`、`die`、`db_mysql`；任务 2 的查询感知 stub（`tests/unit/stubs/query_aware/*`）与产出的备份文件格式
-- 产出：`GENCOL_AWK_PROGRAM`（shell 变量，内嵌 awk 程序文本，接受 `-v mapfile=<table\tcolumn 映射文件>`，重写匹配的 `INSERT INTO \`table\` (...) VALUES` 语句的列名列表，为映射中列出的生成列名追加 `_tmp`，不改动 VALUES 部分）；`cmd_restore`（由 `main` 的 `restore` 分支调用）；`restore_one_database "$db" "$archive"`（DROP/CREATE → 导入 schema → 为生成列新增 `_tmp` 暂存列 → 用 `GENCOL_AWK_PROGRAM` 过滤 data 部分 → 导入 → 删除 `_tmp` 列）
+- 产出：`GENCOL_AWK_PROGRAM`（shell 变量，内嵌 awk 程序文本，接受 `-v mapfile=<table\tcolumn 映射文件>`，重写匹配的 `INSERT INTO \`table\` (...) VALUES` 语句的列名列表，为映射中列出的生成列名追加 `__tmp`，不改动 VALUES 部分）；`cmd_restore`（由 `main` 的 `restore` 分支调用）；`restore_one_database "$db" "$archive"`（DROP/CREATE → 导入 schema → 为生成列新增 `__tmp` 暂存列 → 用 `GENCOL_AWK_PROGRAM` 过滤 data 部分 → 导入 → 删除 `__tmp` 列）
 
 - [ ] **步骤 1：为 awk 过滤程序编写会失败的单元测试**
 
@@ -794,7 +794,7 @@ EOF
   run gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql"
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *'`products` (`id`, `name`, `price`, `price_with_tax_tmp`, `name_upper_tmp`, `thumbnail`) VALUES (1,'"'"'Widget'"'"',9.99,10.99,'"'"'WIDGET'"'"',0x89504E47)'* ]]
+  [[ "$output" == *'`products` (`id`, `name`, `price`, `price_with_tax__tmp`, `name_upper__tmp`, `thumbnail`) VALUES (1,'"'"'Widget'"'"',9.99,10.99,'"'"'WIDGET'"'"',0x89504E47)'* ]]
   [[ "$output" == *"price_with_tax mentioned here, not a real column"* ]]
 
   rm -f "$data_sql" "$map_file"
@@ -894,19 +894,19 @@ run_restore() {
   [[ "$output" == *"Restored database: plaindb"* ]]
   grep -q "DROP DATABASE IF EXISTS \`plaindb\`" "$STUB_LOG"
   grep -q "CREATE DATABASE \`plaindb\`" "$STUB_LOG"
-  ! grep -q "_tmp" "$STUB_LOG"
+  ! grep -q "__tmp" "$STUB_LOG"
 }
 
-@test "restore stages generated columns through _tmp and cleans them up" {
+@test "restore stages generated columns through __tmp and cleans them up" {
   run_restore env MYSQL_GENCOL_RESPONSE="$(printf 'products\tprice_with_tax\tdecimal(10,2)\nproducts\tname_upper\tvarchar(100)')" \
     "$SCRIPT" restore --host h --port 3306 --user u --password p \
     --dir backup_20260101_000000 --database gencoldb --force
   [ "$status" -eq 0 ]
   [[ "$output" == *"Restored database: gencoldb"* ]]
-  grep -q "ADD COLUMN \`price_with_tax_tmp\` decimal(10,2)" "$STUB_LOG"
-  grep -q "ADD COLUMN \`name_upper_tmp\` varchar(100)" "$STUB_LOG"
-  grep -q "DROP COLUMN \`price_with_tax_tmp\`" "$STUB_LOG"
-  grep -q "DROP COLUMN \`name_upper_tmp\`" "$STUB_LOG"
+  grep -q "ADD COLUMN \`price_with_tax__tmp\` decimal(10,2)" "$STUB_LOG"
+  grep -q "ADD COLUMN \`name_upper__tmp\` varchar(100)" "$STUB_LOG"
+  grep -q "DROP COLUMN \`price_with_tax__tmp\`" "$STUB_LOG"
+  grep -q "DROP COLUMN \`name_upper__tmp\`" "$STUB_LOG"
 }
 ```
 
@@ -924,7 +924,7 @@ run_restore() {
 
 # Rewrites the INSERT column-name list (never the VALUES clause) so that
 # generated columns (listed in `mapfile`, tab-separated "table<TAB>column")
-# are redirected to <column>_tmp during data import. Invoked as:
+# are redirected to <column>__tmp during data import. Invoked as:
 #   gawk -v mapfile=<path> "$GENCOL_AWK_PROGRAM" data.sql
 GENCOL_AWK_PROGRAM='
 BEGIN {
@@ -954,7 +954,7 @@ BEGIN {
         colname = col
         gsub(/`/, "", colname)
         if ((table SUBSEP colname) in gencols) {
-          col = "`" colname "_tmp`"
+          col = "`" colname "__tmp`"
         }
         out = (i == 1) ? col : out ", " col
       }
@@ -1021,8 +1021,8 @@ restore_one_database() {
   while IFS="$(printf '\t')" read -r tbl col coltype; do
     [ -n "$tbl" ] || continue
     printf '%s\t%s\n' "$tbl" "$col" >> "$map_file"
-    db_mysql "$db" -e "ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}_tmp\` ${coltype} NULL;" \
-      || die "Failed to add temp column ${col}_tmp on ${tbl}"
+    db_mysql "$db" -e "ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}__tmp\` ${coltype} NULL;" \
+      || die "Failed to add temp column ${col}__tmp on ${tbl}"
   done < "$map_raw"
 
   if [ -s "$map_file" ]; then
@@ -1033,8 +1033,8 @@ restore_one_database() {
 
     while IFS="$(printf '\t')" read -r tbl col; do
       [ -n "$tbl" ] || continue
-      db_mysql "$db" -e "ALTER TABLE \`${tbl}\` DROP COLUMN \`${col}_tmp\`;" \
-        || die "Failed to drop temp column ${col}_tmp on ${tbl}"
+      db_mysql "$db" -e "ALTER TABLE \`${tbl}\` DROP COLUMN \`${col}__tmp\`;" \
+        || die "Failed to drop temp column ${col}__tmp on ${tbl}"
     done < "$map_file"
   else
     db_mysql "$db" < "$data_sql" || die "Failed to import data for database: $db"
@@ -1330,7 +1330,7 @@ latest_backup_dir() {
   run_in_alpine "rm -rf '${backup_dir}'"
 }
 
-@test "end to end: generated columns and blobs round-trip, --dir works, no _tmp columns remain" {
+@test "end to end: generated columns and blobs round-trip, --dir works, no __tmp columns remain" {
   run query_testdb "SELECT id, price_with_tax, name_upper, HEX(thumbnail) FROM products ORDER BY id;"
   before_output="$output"
 
@@ -1348,7 +1348,7 @@ latest_backup_dir() {
   [ "$status" -eq 0 ]
   [ "$output" = "$before_output" ]
 
-  run query_testdb "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='testdb' AND COLUMN_NAME LIKE '%_tmp';"
+  run query_testdb "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='testdb' AND COLUMN_NAME LIKE '%__tmp';"
   [ "$output" = "0" ]
 
   run_in_alpine "rm -rf custom_backups"
@@ -1445,7 +1445,7 @@ DB_PASSWORD=secret
 ## 生成列
 
 备份时 `CREATE TABLE` 语句始终包含完整的列定义。恢复时，生成（虚拟/存储）列本身
-绝不会被直接修改：会新增一个 `<column>_tmp` 列临时接收 dump 出来的值，待数据库
+绝不会被直接修改：会新增一个 `<column>__tmp` 列临时接收 dump 出来的值，待数据库
 根据同一行的其他数据重新计算出真正的生成列后，再删除该临时列。这意味着表上的
 索引、唯一约束、外键都不会受到任何影响。
 

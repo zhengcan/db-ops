@@ -19,7 +19,7 @@ EOF
   run gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql"
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *'`products` (`id`, `name`, `price`, `price_with_tax_tmp`, `name_upper_tmp`, `thumbnail`) VALUES (1,'"'"'Widget'"'"',9.99,10.99,'"'"'WIDGET'"'"',0x89504E47)'* ]]
+  [[ "$output" == *'`products` (`id`, `name`, `price`, `price_with_tax__tmp`, `name_upper__tmp`, `thumbnail`) VALUES (1,'"'"'Widget'"'"',9.99,10.99,'"'"'WIDGET'"'"',0x89504E47)'* ]]
   [[ "$output" == *"price_with_tax mentioned here, not a real column"* ]]
 
   rm -f "$data_sql" "$map_file"
@@ -36,6 +36,48 @@ EOF
   run gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql"
   [ "$status" -eq 0 ]
   [ "$output" = "INSERT INTO \`audit_log\` (\`id\`, \`message\`) VALUES (1,'hello');" ]
+
+  rm -f "$data_sql" "$map_file"
+}
+
+@test "GENCOL_AWK_PROGRAM scopes generated-column names per table, not globally" {
+  data_sql="$(mktemp)"
+  map_file="$(mktemp)"
+  cat > "$data_sql" <<'EOF'
+INSERT INTO `products` (`id`, `total`) VALUES (1,10.99);
+INSERT INTO `inventory` (`id`, `total`) VALUES (1,42);
+EOF
+  # Only `products.total` is a generated column; `inventory.total` is a
+  # regular column that happens to share the same name. It must NOT be
+  # redirected to total__tmp just because a different table's column of
+  # the same name is generated.
+  printf 'products\ttotal\n' > "$map_file"
+
+  run gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql"
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *'`products` (`id`, `total__tmp`) VALUES (1,10.99);'* ]]
+  [[ "$output" == *'`inventory` (`id`, `total`) VALUES (1,42);'* ]]
+
+  rm -f "$data_sql" "$map_file"
+}
+
+@test "GENCOL_AWK_PROGRAM redirects a same-named generated column independently in every table that has one" {
+  data_sql="$(mktemp)"
+  map_file="$(mktemp)"
+  cat > "$data_sql" <<'EOF'
+INSERT INTO `products` (`id`, `total`) VALUES (1,10.99);
+INSERT INTO `inventory` (`id`, `total`) VALUES (1,42);
+EOF
+  # This time both tables' `total` column is generated; both should be
+  # redirected independently to their own table-scoped total__tmp.
+  printf 'products\ttotal\ninventory\ttotal\n' > "$map_file"
+
+  run gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql"
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *'`products` (`id`, `total__tmp`) VALUES (1,10.99);'* ]]
+  [[ "$output" == *'`inventory` (`id`, `total__tmp`) VALUES (1,42);'* ]]
 
   rm -f "$data_sql" "$map_file"
 }
