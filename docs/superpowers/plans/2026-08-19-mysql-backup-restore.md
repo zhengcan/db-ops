@@ -12,7 +12,7 @@
 
 - 交付物必须是**单一文件** `my-ops.sh`——不使用 `lib/` 目录或独立的 `.awk` 文件；所有函数与 awk 程序都内嵌在这一个文件中。
 - 目标运行环境为裸 Alpine；所有非 busybox 依赖（`mariadb-client`、`mariadb-connector-c`、`gzip`、`gawk`）缺失时必须通过 `apk add --no-cache` 自动安装——不能假设已预装。
-- 所有 MySQL 客户端连接必须包含 `--ssl-mode=REQUIRED --ssl-verify-server-cert=0`（强制加密，但不校验自签名证书）。
+- 所有 MySQL 客户端连接必须包含 `--ssl --skip-ssl-verify-server-cert`（强制加密，但不校验自签名证书）。
 - 密码绝不能出现在进程参数列表中——始终通过临时的 `--defaults-extra-file`（`[client]` 段）传递，并通过 `trap` 在退出时删除。
 - 备份必须覆盖：所有用户表（DDL+DML）、视图、存储过程/函数、触发器和事件。
 - BLOB/二进制字段必须使用 `--hex-blob` 导出。
@@ -44,7 +44,7 @@
   - `confirm "prompt"` —— `FORCE=1` 或用户回答 y/Y/yes 时返回 0，否则返回 1
   - `ensure_dependencies` —— 缺失 `mysql mysqldump mysqladmin gzip gawk` 任一项时通过 `apk add --no-cache mariadb-client mariadb-connector-c gzip gawk` 安装
   - `make_defaults_file` —— 生成 `$_TMP_DEFAULTS_FILE`（权限 600，内容 `[client]\npassword=$DB_PASSWORD`）
-  - `db_mysql [args...]` / `db_mysqldump [args...]` / `db_mysqladmin [args...]` —— 自动注入 `--defaults-extra-file --host --port --user --ssl-mode=REQUIRED --ssl-verify-server-cert=0` 的包装函数
+  - `db_mysql [args...]` / `db_mysqldump [args...]` / `db_mysqladmin [args...]` —— 自动注入 `--defaults-extra-file --host --port --user --ssl --skip-ssl-verify-server-cert` 的包装函数
   - `check_connection` —— `db_mysqladmin ping` 失败则报错退出
   - `list_all_databases` —— 查询 `information_schema.SCHEMATA` 排除系统库
   - 测试守卫：脚本文件末尾 `if [ "${DB_OPS_TEST:-0}" != "1" ]; then main "$@"; fi`，测试文件 `export DB_OPS_TEST=1` 后再 `. ./my-ops.sh`，即可只加载函数、不触发 `main`
@@ -191,8 +191,8 @@ exit 0
   run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
     sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass db_mysqladmin ping"
   [ "$status" -eq 0 ]
-  grep -q -- "--ssl-mode=REQUIRED" "$STUB_LOG"
-  grep -q -- "--ssl-verify-server-cert=0" "$STUB_LOG"
+  grep -q -- "--ssl" "$STUB_LOG"
+  grep -q -- "--skip-ssl-verify-server-cert" "$STUB_LOG"
   grep -q -- "--host=testhost" "$STUB_LOG"
   grep -q -- "--port=3306" "$STUB_LOG"
   grep -q -- "--user=testuser" "$STUB_LOG"
@@ -347,8 +347,8 @@ _conn_flags() {
     "--host=${DB_HOST}" \
     "--port=${DB_PORT}" \
     "--user=${DB_USER}" \
-    "--ssl-mode=REQUIRED" \
-    "--ssl-verify-server-cert=0"
+    "--ssl" \
+    "--skip-ssl-verify-server-cert"
 }
 
 db_mysql() {
@@ -1172,7 +1172,7 @@ docker compose up -d --wait
 ```bash
 docker run --rm --network db-ops-test-net alpine:latest sh -c "
   apk add --no-cache mariadb-client >/dev/null &&
-  mysql --ssl-mode=REQUIRED --ssl-verify-server-cert=0 \
+  mysql --ssl --skip-ssl-verify-server-cert \
     -h mysql -P 3306 -uroot -prootpass testdb \
     -e 'SHOW TABLES; SELECT COUNT(*) FROM products;'
 "
@@ -1231,7 +1231,7 @@ run_in_alpine() {
 }
 
 query_testdb() {
-  run_in_alpine "apk add --no-cache mariadb-client >/dev/null && mysql --ssl-mode=REQUIRED --ssl-verify-server-cert=0 -h mysql -P 3306 -uroot -prootpass -N -B -e \"$1\" testdb"
+  run_in_alpine "apk add --no-cache mariadb-client >/dev/null && mysql --ssl --skip-ssl-verify-server-cert -h mysql -P 3306 -uroot -prootpass -N -B -e \"$1\" testdb"
 }
 
 @test "end to end: info, backup, restore reproduce all object types and data" {
@@ -1393,7 +1393,7 @@ DB_PASSWORD=secret
 
 ## TLS
 
-所有连接均使用 `--ssl-mode=REQUIRED --ssl-verify-server-cert=0`：
+所有连接均使用 `--ssl --skip-ssl-verify-server-cert`：
 流量被加密，但不校验服务器证书，因此自签名证书无需额外配置即可正常工作。
 
 ## 生成列

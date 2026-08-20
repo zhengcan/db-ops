@@ -40,7 +40,7 @@
 所有 `mysql` / `mysqldump` / `mysqladmin` 调用固定加入：
 
 ```
---ssl-mode=REQUIRED --ssl-verify-server-cert=0
+--ssl --skip-ssl-verify-server-cert
 ```
 
 即强制加密传输，但不校验服务器证书链/主机名合法性，满足自签名证书场景。
@@ -77,7 +77,7 @@
 1. **Schema 部分**：
    ```
    mysqldump --no-data --routines --triggers --events \
-     --ssl-mode=REQUIRED --ssl-verify-server-cert=0 \
+     --ssl --skip-ssl-verify-server-cert \
      --defaults-extra-file=<tmp_cnf> -h $HOST -P $PORT -u $USER $DB
    ```
    覆盖所有用户表、视图、存储过程/函数、触发器、事件的 DDL；生成列定义
@@ -87,7 +87,7 @@
    ```
    mysqldump --no-create-info --complete-insert --skip-extended-insert \
      --hex-blob --single-transaction \
-     --ssl-mode=REQUIRED --ssl-verify-server-cert=0 \
+     --ssl --skip-ssl-verify-server-cert \
      --defaults-extra-file=<tmp_cnf> -h $HOST -P $PORT -u $USER $DB
    ```
    - `--single-transaction`：InnoDB 一致性快照，不加表锁

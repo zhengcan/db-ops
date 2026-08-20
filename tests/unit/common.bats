@@ -82,8 +82,8 @@ setup() {
   run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
     sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass db_mysqladmin ping"
   [ "$status" -eq 0 ]
-  grep -q -- "--ssl-mode=REQUIRED" "$STUB_LOG"
-  grep -q -- "--ssl-verify-server-cert=0" "$STUB_LOG"
+  grep -qE -- '(^| )--ssl( |$)' "$STUB_LOG"
+  grep -q -- "--skip-ssl-verify-server-cert" "$STUB_LOG"
   grep -q -- "--host=testhost" "$STUB_LOG"
   grep -q -- "--port=3306" "$STUB_LOG"
   grep -q -- "--user=testuser" "$STUB_LOG"
