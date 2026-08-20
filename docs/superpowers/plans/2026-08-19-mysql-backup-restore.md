@@ -1148,8 +1148,6 @@ services:
       MYSQL_DATABASE: testdb
     ports:
       - "3307:3306"
-    volumes:
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpass"]
       interval: 5s
@@ -1157,7 +1155,18 @@ services:
       retries: 20
 ```
 
-- [ ] **步骤 3：启动环境并手动验证**
+> **注意（实际执行中发现）：** 最初设计里 `init.sql` 通过 bind mount 挂载到
+> `/docker-entrypoint-initdb.d/init.sql` 由容器首次启动时自动执行。但在本机
+> Rancher Desktop 的 virtiofs 文件共享上，单文件 bind mount 会导致容器内报
+> `ERROR: Can't initialize batch_readline - may be the input source is a
+> directory or a block device`（源文件在宿主机上确实是普通文件，但通过
+> virtiofs 挂载后容器内一度识别异常）。因此 compose 文件里**不再**挂载
+> `init.sql`，改为容器启动健康后，手动把 `init.sql` 管道给容器内的
+> `mysql` 客户端执行（见步骤 3）。这一问题是否在其他 Docker/Rancher
+> Desktop 版本或 Linux 宿主机上复现未知，如果你的环境 bind mount 正常，
+> 也可以按原设计挂载，二者效果等价。
+
+- [ ] **步骤 3：启动环境、灌入种子数据并手动验证**
 
 运行：
 ```bash
@@ -1166,12 +1175,26 @@ docker compose up -d --wait
 ```
 预期：命令退出码为 0，`docker compose ps` 显示 `mysql` 状态为 `healthy`。
 
+灌入种子 schema（健康检查通过后，`docker-entrypoint-initdb.d` 不再自动执行，
+需要手动执行一次）：
+```bash
+docker compose exec -T mysql mysql -uroot -prootpass testdb < init.sql
+```
+
 - [ ] **步骤 4：从裸 Alpine 容器验证自签名 TLS 与种子 schema**
 
-运行：
+> **注意（实际执行中发现）：** 本机同样发现 virtiofs 对宿主机目录的 bind
+> mount（`docker run -v <host目录>:/work ...`）存在缓存滞后问题，容器内
+> 可能看到过期/缺文件的快照。验证时改用 `docker cp` 把需要的文件拷进一个
+> 长期存活的容器，而不是 bind mount；如果你的环境 bind mount 正常，也可以
+> 直接用 `-v` 挂载。
+
+运行（若 Alpine 官方 CDN 在你的网络下证书校验失败/不可达，替换成国内镜像源，
+如下示例已包含该替换，正常网络环境可以去掉这行 `sed`）：
 ```bash
 docker run --rm --network db-ops-test-net alpine:latest sh -c "
-  apk add --no-cache mariadb-client >/dev/null &&
+  sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+  apk add --no-cache mariadb-client mariadb-connector-c >/dev/null &&
   mysql --ssl --skip-ssl-verify-server-cert \
     -h mysql -P 3306 -uroot -prootpass testdb \
     -e 'SHOW TABLES; SELECT COUNT(*) FROM products;'
