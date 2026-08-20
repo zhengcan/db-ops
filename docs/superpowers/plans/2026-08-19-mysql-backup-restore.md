@@ -1232,47 +1232,79 @@ git commit -m "test: add dockerized MySQL integration environment with self-sign
 
 - [ ] **步骤 1：编写完整的端到端 bats 测试**
 
+> **注意（沿用任务 4 中发现的环境问题）：** 本机 Rancher Desktop 的 virtiofs
+> 文件共享对 bind mount（`docker run -v <host目录>:/work`）存在缓存滞后/快照
+> 不一致的问题，且 `docker-entrypoint-initdb.d` 的单文件 bind mount 会直接
+> 报错。因此本测试**不使用 bind mount**：用一个在 `setup_file` 里创建、整个
+> 测试文件生命周期内保持运行的 Alpine 容器，通过 `docker cp` 把
+> `my-ops.sh` 拷进去一次；后续每个 `@test` 都用 `docker exec` 在这个容器里
+> 跑命令、以及用 `docker exec`/`docker cp` 检查它在容器内产生的备份文件
+> （而不是假设这些文件会直接出现在宿主机文件系统上）。如果你的环境 bind
+> mount 工作正常，也可以改回更简单的 `docker run -v ... alpine sh -c`
+> 模式，两者效果等价，选你环境里能跑通的那种。
+
 创建 `tests/integration/full_roundtrip.bats`：
 
 ```bash
 #!/usr/bin/env bats
 
+ALPINE_CONTAINER="my-ops-e2e-runner"
+
 setup_file() {
   cd "$BATS_TEST_DIRNAME"
   docker compose up -d --wait
+
+  # Seed schema (docker-entrypoint-initdb.d bind mount is unreliable on
+  # some hosts; pipe it in explicitly instead).
+  docker compose exec -T mysql mysql -uroot -prootpass testdb < init.sql
+
+  # Long-lived Alpine container to run my-ops.sh in, avoiding bind-mount
+  # reliability issues: copy the script in once via `docker cp`.
+  docker rm -f "$ALPINE_CONTAINER" >/dev/null 2>&1 || true
+  docker create --name "$ALPINE_CONTAINER" --network db-ops-test-net \
+    alpine:latest sh -c "sleep 3600" >/dev/null
+  docker start "$ALPINE_CONTAINER" >/dev/null
+  docker exec "$ALPINE_CONTAINER" mkdir -p /work
+  docker cp "$BATS_TEST_DIRNAME/../../my-ops.sh" "$ALPINE_CONTAINER:/work/my-ops.sh"
+  docker exec "$ALPINE_CONTAINER" sh -c "
+    sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+    apk add --no-cache mariadb-client mariadb-connector-c gzip gawk >/dev/null
+    chmod +x /work/my-ops.sh
+  "
 }
 
 teardown_file() {
   cd "$BATS_TEST_DIRNAME"
+  docker rm -f "$ALPINE_CONTAINER" >/dev/null 2>&1 || true
   docker compose down -v
 }
 
 run_in_alpine() {
-  docker run --rm --network db-ops-test-net \
-    -v "$BATS_TEST_DIRNAME/../..":/work -w /work \
-    alpine:latest sh -c "$1"
+  docker exec -w /work "$ALPINE_CONTAINER" sh -c "$1"
 }
 
 query_testdb() {
-  run_in_alpine "apk add --no-cache mariadb-client >/dev/null && mysql --ssl --skip-ssl-verify-server-cert -h mysql -P 3306 -uroot -prootpass -N -B -e \"$1\" testdb"
+  run_in_alpine "mysql --ssl --skip-ssl-verify-server-cert -h mysql -P 3306 -uroot -prootpass -N -B -e \"$1\" testdb"
+}
+
+latest_backup_dir() {
+  # $1: optional subdirectory to look under (relative to /work), default /work itself
+  base="${1:-.}"
+  run_in_alpine "ls -d ${base}/backup_* | tail -1"
 }
 
 @test "end to end: info, backup, restore reproduce all object types and data" {
-  root="$BATS_TEST_DIRNAME/../.."
-  rm -rf "$root"/backup_*
-
-  run run_in_alpine "./my-ops.sh info --host mysql --port 3306 --user root --password rootpass --database testdb"
+  run run_in_alpine "rm -rf backup_*; ./my-ops.sh info --host mysql --port 3306 --user root --password rootpass --database testdb"
   [ "$status" -eq 0 ]
 
   run run_in_alpine "./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
   [ "$status" -eq 0 ]
-  backup_dir="$(ls -d "$root"/backup_* | tail -1)"
-  rel_backup_dir="${backup_dir#$root/}"
+  backup_dir="$(latest_backup_dir)"
 
   run query_testdb "DROP DATABASE testdb;"
   [ "$status" -eq 0 ]
 
-  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${rel_backup_dir}' --database testdb --force"
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
   [ "$status" -eq 0 ]
 
   run query_testdb "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='testdb' AND TABLE_TYPE='BASE TABLE';"
@@ -1295,26 +1327,21 @@ query_testdb() {
   run query_testdb "SELECT COUNT(*) FROM audit_log WHERE message LIKE '%Gizmo%';"
   [ "$output" = "1" ]
 
-  rm -rf "$backup_dir"
+  run_in_alpine "rm -rf '${backup_dir}'"
 }
 
 @test "end to end: generated columns and blobs round-trip, --dir works, no _tmp columns remain" {
-  root="$BATS_TEST_DIRNAME/../.."
-  rm -rf "$root"/backup_* "$root"/custom_backups
-
   run query_testdb "SELECT id, price_with_tax, name_upper, HEX(thumbnail) FROM products ORDER BY id;"
   before_output="$output"
 
-  mkdir -p "$root/custom_backups"
-  run run_in_alpine "./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb --dir custom_backups"
+  run run_in_alpine "rm -rf backup_* custom_backups; mkdir -p custom_backups; ./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb --dir custom_backups"
   [ "$status" -eq 0 ]
-  backup_dir="$(ls -d "$root"/custom_backups/backup_* | tail -1)"
-  rel_backup_dir="${backup_dir#$root/}"
+  backup_dir="$(latest_backup_dir custom_backups)"
 
   run query_testdb "DROP TABLE IF EXISTS products;"
   [ "$status" -eq 0 ]
 
-  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${rel_backup_dir}' --database testdb --force"
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
   [ "$status" -eq 0 ]
 
   run query_testdb "SELECT id, price_with_tax, name_upper, HEX(thumbnail) FROM products ORDER BY id;"
@@ -1324,28 +1351,24 @@ query_testdb() {
   run query_testdb "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='testdb' AND COLUMN_NAME LIKE '%_tmp';"
   [ "$output" = "0" ]
 
-  rm -rf "$root/custom_backups"
+  run_in_alpine "rm -rf custom_backups"
 }
 
 @test "restore is idempotent when run twice against the same backup" {
-  root="$BATS_TEST_DIRNAME/../.."
-  rm -rf "$root"/backup_*
-
-  run run_in_alpine "./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
+  run run_in_alpine "rm -rf backup_*; ./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
   [ "$status" -eq 0 ]
-  backup_dir="$(ls -d "$root"/backup_* | tail -1)"
-  rel_backup_dir="${backup_dir#$root/}"
+  backup_dir="$(latest_backup_dir)"
 
-  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${rel_backup_dir}' --database testdb --force"
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
   [ "$status" -eq 0 ]
 
-  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${rel_backup_dir}' --database testdb --force"
+  run run_in_alpine "./my-ops.sh restore --host mysql --port 3306 --user root --password rootpass --dir '${backup_dir}' --database testdb --force"
   [ "$status" -eq 0 ]
 
   run query_testdb "SELECT COUNT(*) FROM products;"
   [ "$output" = "3" ]
 
-  rm -rf "$backup_dir"
+  run_in_alpine "rm -rf '${backup_dir}'"
 }
 ```
 
