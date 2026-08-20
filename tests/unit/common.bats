@@ -159,11 +159,39 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "validate_identifier accepts real-world seed schema identifiers" {
+  run validate_identifier "products"
+  [ "$status" -eq 0 ]
+  run validate_identifier "price_with_tax"
+  [ "$status" -eq 0 ]
+  run validate_identifier "testdb2"
+  [ "$status" -eq 0 ]
+  run validate_identifier "audit_log"
+  [ "$status" -eq 0 ]
+}
+
 @test "validate_identifier rejects identifiers containing a backtick" {
   run validate_identifier 'evil`; DROP DATABASE mysql; --'
   [ "$status" -eq 1 ]
   [[ "$output" == *"ERROR"* ]]
-  [[ "$output" == *"backtick"* ]]
+  [[ "$output" == *"Invalid identifier"* ]]
+}
+
+@test "validate_identifier rejects identifiers containing a single quote" {
+  run validate_identifier "foo' OR '1'='1"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ERROR"* ]]
+  [[ "$output" == *"Invalid identifier"* ]]
+}
+
+@test "validate_identifier rejects identifiers containing a semicolon or whitespace" {
+  run validate_identifier "foo; DROP TABLE bar"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ERROR"* ]]
+
+  run validate_identifier "foo bar"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ERROR"* ]]
 }
 
 @test "resolve_target_databases dies when --database contains a backtick" {
@@ -171,5 +199,13 @@ setup() {
   DB_ALL_DATABASES=0
   run resolve_target_databases
   [ "$status" -eq 1 ]
-  [[ "$output" == *"backtick"* ]]
+  [[ "$output" == *"Invalid identifier"* ]]
+}
+
+@test "resolve_target_databases dies when --database contains a single quote" {
+  DB_DATABASE="ok_db,evil'db"
+  DB_ALL_DATABASES=0
+  run resolve_target_databases
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Invalid identifier"* ]]
 }

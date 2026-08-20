@@ -61,17 +61,22 @@ load_config() {
   fi
 }
 
-# Rejects identifiers (database/table/column names) that contain a backtick
-# character. MySQL identifiers quoted with backticks require any embedded
-# backtick to be doubled; rather than trying to escape/reconstruct that, we
-# simply refuse any identifier containing a backtick outright. A legitimate
-# database/table/column name in normal operational use will essentially
-# never contain one, so rejecting it is safe and closes off a class of SQL
-# injection where a crafted name could break out of the backtick-quoted
-# identifier context.
+# Validates identifiers (database/table/column names) with an allowlist:
+# only letters, digits, and underscores are permitted. This is deliberately
+# strict rather than trying to blacklist specific dangerous characters
+# (backtick, single quote, semicolon, whitespace, comment markers, etc.)
+# because these identifiers get interpolated into SQL in multiple contexts
+# across this script: some inside backtick-quoted identifiers (where a
+# backtick could break out) and some inside single-quoted string literals
+# (e.g. WHERE TABLE_SCHEMA='${db}', where a single quote, semicolon, or
+# comment sequence could break out). An allowlist of safe characters closes
+# off both injection classes at once instead of chasing each context's
+# specific escape character. Legitimate database/table/column names in
+# normal operational use consist of letters, digits, and underscores, so
+# this is safe for real-world use.
 validate_identifier() {
   case "$1" in
-    *'`'*) die "Invalid identifier (contains backtick): $1" ;;
+    *[!A-Za-z0-9_]*|'') die "Invalid identifier (only letters, digits, and underscores are allowed): $1" ;;
   esac
 }
 
