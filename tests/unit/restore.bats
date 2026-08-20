@@ -58,6 +58,18 @@ run_restore() {
   [[ "$output" == *"Specify --database"* ]]
 }
 
+@test "restore rejects --all-databases" {
+  run run_restore "$SCRIPT" restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --all-databases --force
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"restore does not support --all-databases"* ]]
+}
+
+@test "restore rejects combining --database and --all-databases with the more general error" {
+  run run_restore "$SCRIPT" restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --database plaindb --all-databases --force
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Cannot combine --database and --all-databases"* ]]
+}
+
 @test "restore dies when the backup file for a database is missing" {
   run run_restore "$SCRIPT" restore --host h --port 3306 --user u --password p --dir backup_20260101_000000 --database nosuchdb --force
   [ "$status" -eq 1 ]

@@ -42,6 +42,22 @@ teardown() {
   [[ "$output" == *"No databases to process"* ]]
 }
 
+@test "info fails with a clear error when both --database and --all-databases are given" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" info \
+    --host h --port 3306 --user u --password p --database mydb --all-databases
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Cannot combine --database and --all-databases"* ]]
+}
+
+@test "info fails with a clear error when an object-count query fails" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" MYSQL_EXIT_CODE=1 "$SCRIPT" info \
+    --host h --port 3306 --user u --password p --database mydb
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Failed to query object counts"* ]]
+}
+
 @test "info --all-databases reports a section for every discovered database" {
   cd "$WORK_DIR"
   run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" info \

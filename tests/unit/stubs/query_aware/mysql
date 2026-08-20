@@ -7,19 +7,20 @@ echo "$0 $*" >> "${STUB_LOG:-/dev/null}"
 args="$*"
 case "$args" in
   *"SCHEMA_NAME NOT IN"*) printf 'db_one\ndb_two\n'; exit 0 ;;
-  *"TABLE_TYPE='BASE TABLE'"*) echo 3; exit 0 ;;
-  *"TABLE_TYPE='VIEW'"*) echo 1; exit 0 ;;
-  *"information_schema.ROUTINES"*) echo 2; exit 0 ;;
-  *"information_schema.TRIGGERS"*) echo 1; exit 0 ;;
-  *"information_schema.EVENTS"*) echo 1; exit 0 ;;
+  *"TABLE_TYPE='BASE TABLE'"*) echo 3; exit "${MYSQL_EXIT_CODE:-0}" ;;
+  *"TABLE_TYPE='VIEW'"*) echo 1; exit "${MYSQL_EXIT_CODE:-0}" ;;
+  *"information_schema.ROUTINES"*) echo 2; exit "${MYSQL_EXIT_CODE:-0}" ;;
+  *"information_schema.TRIGGERS"*) echo 1; exit "${MYSQL_EXIT_CODE:-0}" ;;
+  *"information_schema.EVENTS"*) echo 1; exit "${MYSQL_EXIT_CODE:-0}" ;;
   *"GENERATION_EXPRESSION"*)
     printf '%s\n' "${MYSQL_GENCOL_RESPONSE:-}"
     exit 0
     ;;
   *)
     # DROP/CREATE DATABASE, ALTER TABLE, or schema/data import via stdin:
-    # drain stdin (if any) and succeed. If STUB_STDIN_CAPTURE is set,
-    # also append the stdin content there (with a separator) so tests
+    # drain stdin (if any) and succeed (unless MYSQL_EXIT_CODE is set, used
+    # by tests to simulate a mid-restore failure). If STUB_STDIN_CAPTURE is
+    # set, also append the stdin content there (with a separator) so tests
     # can assert on what was actually piped into `mysql`.
     if [ -n "${STUB_STDIN_CAPTURE:-}" ]; then
       {
@@ -29,6 +30,6 @@ case "$args" in
     else
       cat >/dev/null 2>&1 || true
     fi
-    exit 0
+    exit "${MYSQL_EXIT_CODE:-0}"
     ;;
 esac
