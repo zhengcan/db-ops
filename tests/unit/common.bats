@@ -43,6 +43,43 @@ setup() {
   [ "$BACKUP_DIR" = "/tmp/somebackup" ]
 }
 
+@test "parse_common_args dies with a clear error when an option's value is missing" {
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; parse_common_args --host'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ERROR"* ]]
+  [[ "$output" == *"--host requires a value"* ]]
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; parse_common_args --port'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--port requires a value"* ]]
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; parse_common_args --user'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--user requires a value"* ]]
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; parse_common_args --password'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--password requires a value"* ]]
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; parse_common_args --database'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--database requires a value"* ]]
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; parse_common_args --dir'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--dir requires a value"* ]]
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; parse_common_args --config'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--config requires a value"* ]]
+}
+
+@test "extract_config_file dies with a clear error when --config's value is missing" {
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; extract_config_file --config'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--config requires a value"* ]]
+}
+
 @test "load_config sources a KEY=VALUE config file" {
   cfg="$(mktemp)"
   printf 'DB_HOST=cfghost\nDB_USER=cfguser\n' > "$cfg"
@@ -104,11 +141,100 @@ setup() {
   run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 sh -c "
     . '$SCRIPT'
     DB_PASSWORD=testpass make_defaults_file
-    grep -q '^password=testpass\$' \"\$_TMP_DEFAULTS_FILE\" || exit 1
+    grep -q '^password=\"testpass\"\$' \"\$_TMP_DEFAULTS_FILE\" || exit 1
     perms=\$(stat -f '%Lp' \"\$_TMP_DEFAULTS_FILE\" 2>/dev/null || stat -c '%a' \"\$_TMP_DEFAULTS_FILE\")
     [ \"\$perms\" = '600' ] || exit 1
   "
   [ "$status" -eq 0 ]
+}
+
+@test "make_defaults_file quotes a password containing # so it is not truncated as a comment" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 sh -c "
+    . '$SCRIPT'
+    DB_PASSWORD='secret#123' make_defaults_file
+    grep -q '^password=\"secret#123\"\$' \"\$_TMP_DEFAULTS_FILE\" || exit 1
+  "
+  [ "$status" -eq 0 ]
+}
+
+@test "make_defaults_file escapes embedded double quotes and backslashes in the password" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 sh -c '
+    . "'"$SCRIPT"'"
+    DB_PASSWORD='"'"'p"a\b'"'"' make_defaults_file
+    grep -q '"'"'^password="p\\"a\\\\b"$'"'"' "$_TMP_DEFAULTS_FILE" || exit 1
+  '
+  [ "$status" -eq 0 ]
+}
+
+@test "register_tmp_file adds a path to the cleanup list and chmods it 600" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 sh -c '
+    . "'"$SCRIPT"'"
+    f="$(mktemp)"
+    chmod 644 "$f"
+    register_tmp_file "$f"
+    case "$_TMP_FILES_TO_CLEAN" in
+      *"$f"*) : ;;
+      *) exit 1 ;;
+    esac
+    perms=$(stat -f "%Lp" "$f" 2>/dev/null || stat -c "%a" "$f")
+    [ "$perms" = "600" ] || exit 1
+    rm -f "$f"
+  '
+  [ "$status" -eq 0 ]
+}
+
+@test "cleanup_common removes all registered temp files, not just the defaults file" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  f1="$(mktemp)"
+  f2="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 F1="$f1" F2="$f2" sh -c '
+    . "'"$SCRIPT"'"
+    register_tmp_file "$F1"
+    register_tmp_file "$F2"
+    cleanup_common
+  '
+  [ "$status" -eq 0 ]
+  [ ! -f "$f1" ]
+  [ ! -f "$f2" ]
+}
+
+@test "restore_one_database cleans up registered temp files even when it dies mid-way" {
+  # Simulate a mid-restore failure (DROP/CREATE DATABASE call fails) and
+  # verify that temp files registered before the failure point (tmp_sql,
+  # tmp_sql_filtered) are still cleaned up via the EXIT trap, not left
+  # behind on disk. register_tmp_file is overridden after sourcing to also
+  # log every registered path to TRACK_FILE, so the outer assertion can
+  # check that none of the files it saw still exist once the process
+  # (which dies via `die` -> `exit 1`, triggering the EXIT trap) has ended.
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs/query_aware"
+  WORK_DIR="$(mktemp -d)"
+  printf 'CREATE TABLE t (id INT);\n' > "$WORK_DIR/plain.sql"
+  gzip -c "$WORK_DIR/plain.sql" > "$WORK_DIR/db.sql.gz"
+
+  TRACK_FILE="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 MYSQL_EXIT_CODE=1 TRACK_FILE="$TRACK_FILE" bash -c '
+    . "'"$SCRIPT"'"
+    register_tmp_file() {
+      _TMP_FILES_TO_CLEAN="$_TMP_FILES_TO_CLEAN $1"
+      chmod 600 "$1"
+      printf "%s\n" "$1" >> "$TRACK_FILE"
+    }
+    restore_one_database db "'"$WORK_DIR"'/db.sql.gz"
+  '
+  [ "$status" -ne 0 ]
+
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ ! -f "$f" ]
+  done < "$TRACK_FILE"
+  # Sanity check: at least one file must actually have been tracked,
+  # otherwise this test would trivially pass without exercising cleanup.
+  [ -s "$TRACK_FILE" ]
+
+  rm -rf "$WORK_DIR" "$TRACK_FILE"
 }
 
 @test "check_connection fails when mysqladmin ping stub returns error" {
@@ -208,4 +334,12 @@ setup() {
   run resolve_target_databases
   [ "$status" -eq 1 ]
   [[ "$output" == *"Invalid identifier"* ]]
+}
+
+@test "resolve_target_databases dies when both --database and --all-databases are set" {
+  DB_DATABASE="ok_db"
+  DB_ALL_DATABASES=1
+  run resolve_target_databases
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Cannot combine --database and --all-databases"* ]]
 }

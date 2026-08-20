@@ -14,6 +14,7 @@ BACKUP_DIR=""
 CONFIG_FILE=""
 
 _TMP_DEFAULTS_FILE=""
+_TMP_FILES_TO_CLEAN=""
 
 # ===================== Generic helpers =====================
 die() {
@@ -24,15 +25,15 @@ die() {
 parse_common_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --config) CONFIG_FILE="$2"; shift 2 ;;
-      --host) DB_HOST="$2"; shift 2 ;;
-      --port) DB_PORT="$2"; shift 2 ;;
-      --user) DB_USER="$2"; shift 2 ;;
-      --password) DB_PASSWORD="$2"; shift 2 ;;
-      --database) DB_DATABASE="$2"; shift 2 ;;
+      --config) [ "$#" -ge 2 ] || die "--config requires a value"; CONFIG_FILE="$2"; shift 2 ;;
+      --host) [ "$#" -ge 2 ] || die "--host requires a value"; DB_HOST="$2"; shift 2 ;;
+      --port) [ "$#" -ge 2 ] || die "--port requires a value"; DB_PORT="$2"; shift 2 ;;
+      --user) [ "$#" -ge 2 ] || die "--user requires a value"; DB_USER="$2"; shift 2 ;;
+      --password) [ "$#" -ge 2 ] || die "--password requires a value"; DB_PASSWORD="$2"; shift 2 ;;
+      --database) [ "$#" -ge 2 ] || die "--database requires a value"; DB_DATABASE="$2"; shift 2 ;;
       --all-databases) DB_ALL_DATABASES=1; shift ;;
       --force) FORCE=1; shift ;;
-      --dir) BACKUP_DIR="$2"; shift 2 ;;
+      --dir) [ "$#" -ge 2 ] || die "--dir requires a value"; BACKUP_DIR="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -47,7 +48,7 @@ extract_config_file() {
   _EXTRACTED_CONFIG_FILE=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --config) _EXTRACTED_CONFIG_FILE="$2"; shift 2 ;;
+      --config) [ "$#" -ge 2 ] || die "--config requires a value"; _EXTRACTED_CONFIG_FILE="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -116,9 +117,25 @@ confirm() {
 }
 
 # ===================== Dependency management =====================
+
+# Registers a temporary file path so that cleanup_common() removes it on
+# exit even if the caller dies (via `die`/`set -e`) before reaching its own
+# normal `rm -f` cleanup line. Also chmods the file to 600 immediately,
+# since every temp file registered here carries plaintext database
+# credentials or dump data. Call this immediately after every `mktemp`
+# invocation that produces a file needing cleanup.
+register_tmp_file() {
+  _TMP_FILES_TO_CLEAN="$_TMP_FILES_TO_CLEAN $1"
+  chmod 600 "$1"
+}
+
 cleanup_common() {
   if [ -n "$_TMP_DEFAULTS_FILE" ] && [ -f "$_TMP_DEFAULTS_FILE" ]; then
     rm -f "$_TMP_DEFAULTS_FILE"
+  fi
+  # shellcheck disable=SC2086
+  if [ -n "$_TMP_FILES_TO_CLEAN" ]; then
+    rm -f $_TMP_FILES_TO_CLEAN 2>/dev/null || true
   fi
 }
 trap cleanup_common EXIT INT TERM
@@ -146,10 +163,18 @@ ensure_dependencies() {
 
 # Writes a temporary my.cnf-style defaults file containing the password,
 # so it never appears in the process argument list. Sets _TMP_DEFAULTS_FILE.
+#
+# The password value is wrapped in double quotes with internal backslashes
+# and double quotes escaped. This is required because MySQL/MariaDB option
+# file syntax treats an unquoted `#` as the start of a line comment: an
+# unquoted password containing `#` would be silently truncated at that
+# character, producing an authentication failure with no indication of the
+# real cause. Quoting the value disables comment-parsing within it.
 make_defaults_file() {
   _TMP_DEFAULTS_FILE="$(mktemp)"
-  chmod 600 "$_TMP_DEFAULTS_FILE"
-  printf '[client]\npassword=%s\n' "$DB_PASSWORD" > "$_TMP_DEFAULTS_FILE"
+  register_tmp_file "$_TMP_DEFAULTS_FILE"
+  esc_pw=$(printf '%s' "$DB_PASSWORD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '[client]\npassword="%s"\n' "$esc_pw" > "$_TMP_DEFAULTS_FILE"
 }
 
 # Each db_* wrapper below prepends the common connection flags to its
@@ -210,6 +235,9 @@ list_all_databases() {
 # separated list of database names, one per line, to stdout.
 resolve_target_databases() {
   target_databases=""
+  if [ "$DB_ALL_DATABASES" -eq 1 ] && [ -n "$DB_DATABASE" ]; then
+    die "Cannot combine --database and --all-databases"
+  fi
   if [ "$DB_ALL_DATABASES" -eq 1 ]; then
     target_databases="$(list_all_databases)"
   elif [ -n "$DB_DATABASE" ]; then
@@ -248,11 +276,16 @@ cmd_info() {
     [ -n "$db" ] || continue
     echo ""
     echo "Database: $db"
-    tables=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${db}' AND TABLE_TYPE='BASE TABLE';")
-    views=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${db}' AND TABLE_TYPE='VIEW';")
-    routines=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='${db}';")
-    triggers=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='${db}';")
-    events=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='${db}';")
+    tables=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${db}' AND TABLE_TYPE='BASE TABLE';") \
+      || die "Failed to query object counts for database: $db"
+    views=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${db}' AND TABLE_TYPE='VIEW';") \
+      || die "Failed to query object counts for database: $db"
+    routines=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='${db}';") \
+      || die "Failed to query object counts for database: $db"
+    triggers=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='${db}';") \
+      || die "Failed to query object counts for database: $db"
+    events=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='${db}';") \
+      || die "Failed to query object counts for database: $db"
     echo "  Tables:               $tables"
     echo "  Views:                $views"
     echo "  Routines (proc/func): $routines"
@@ -290,6 +323,7 @@ backup_one_database() {
   db="$1"
   out_file="$2"
   tmp_sql="$(mktemp)"
+  register_tmp_file "$tmp_sql"
 
   db_mysqldump --no-data --routines --triggers --events "$db" >> "$tmp_sql" \
     || die "Schema dump failed for database: $db"
@@ -352,6 +386,11 @@ cmd_restore() {
   ensure_dependencies
   check_connection
 
+  [ "$DB_ALL_DATABASES" -eq 1 ] && [ -n "$DB_DATABASE" ] \
+    && die "Cannot combine --database and --all-databases"
+  [ "$DB_ALL_DATABASES" -eq 1 ] \
+    && die "restore does not support --all-databases; specify an explicit --database list"
+
   [ -n "$BACKUP_DIR" ] || die "Specify --dir <backup_dir>"
   [ -d "$BACKUP_DIR" ] || die "Backup directory not found: $BACKUP_DIR"
   [ -n "$DB_DATABASE" ] || die "Specify --database <db1,db2> (explicit list required)"
@@ -384,16 +423,30 @@ restore_one_database() {
   db="$1"
   archive="$2"
   tmp_sql="$(mktemp)"
-  gzip -dc "$archive" > "$tmp_sql"
+  register_tmp_file "$tmp_sql"
+  gzip -dc "$archive" > "$tmp_sql" || die "Failed to decompress backup archive: $archive"
 
   db_mysql -e "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`;" < /dev/null \
     || die "Failed to (re)create database: $db"
 
   tmp_sql_filtered="$(mktemp)"
-  grep -Ev '(SET @OLD_[A-Za-z_]+=|SET [A-Za-z_]+=@OLD_[A-Za-z_]+)' "$tmp_sql" > "$tmp_sql_filtered"
+  register_tmp_file "$tmp_sql_filtered"
+  # This is a text-substring filter, not a real SQL parser: it strips any
+  # line that textually matches the SET @OLD_.../SET ...=@OLD_... pattern.
+  # If a row's data happens to contain a literal string matching this
+  # pattern (e.g. a text column value like "SET @OLD_FOO=1"), that INSERT
+  # line would be silently filtered out and its data lost. This is a known,
+  # accepted limitation -- a true SQL parser would avoid it but is not
+  # justified by the cost for this tool's scope. `|| true` guards against
+  # grep's exit code 1 when every line is filtered out (e.g. a table with
+  # no bookkeeping lines at all), matching the same convention already used
+  # by split_csv().
+  grep -Ev '(SET @OLD_[A-Za-z_]+=|SET [A-Za-z_]+=@OLD_[A-Za-z_]+)' "$tmp_sql" > "$tmp_sql_filtered" || true
 
   schema_sql="$(mktemp)"
   data_sql="$(mktemp)"
+  register_tmp_file "$schema_sql"
+  register_tmp_file "$data_sql"
   awk -v schema_out="$schema_sql" -v data_out="$data_sql" '
     /^INSERT INTO / { in_insert = 1 }
     in_insert { print >> data_out; next }
@@ -405,6 +458,8 @@ restore_one_database() {
 
   map_raw="$(mktemp)"
   map_file="$(mktemp)"
+  register_tmp_file "$map_raw"
+  register_tmp_file "$map_file"
   db_mysql -N -B -e "
     SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
     FROM information_schema.COLUMNS
@@ -425,6 +480,7 @@ restore_one_database() {
 
   if [ -s "$map_file" ]; then
     filtered_data_sql="$(mktemp)"
+    register_tmp_file "$filtered_data_sql"
     gawk -v mapfile="$map_file" "$GENCOL_AWK_PROGRAM" "$data_sql" > "$filtered_data_sql"
     { printf '%s\n' "SET FOREIGN_KEY_CHECKS=0; SET UNIQUE_CHECKS=0; SET AUTOCOMMIT=0;"; cat "$filtered_data_sql"; printf '%s\n' "COMMIT;"; } \
       | db_mysql "$db" || die "Failed to import data for database: $db"
