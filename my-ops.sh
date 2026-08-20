@@ -96,7 +96,9 @@ confirm() {
   #
   # DB_OPS_TEST_CONFIRM_STDIN=1 lets unit tests simulate answers by piping
   # into stdin (there is no real tty available in a test/CI sandbox); it
-  # must never be set in production use.
+  # must never be set in production use. (Note: this is intentionally a
+  # separate variable from DB_OPS_TEST, which suppresses running `main` --
+  # tests that need the real CLI to execute still need main() to run.)
   if [ "${DB_OPS_TEST_CONFIRM_STDIN:-0}" = "1" ]; then
     read -r reply
   else
