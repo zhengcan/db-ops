@@ -378,8 +378,11 @@ cmd_backup() {
 
   printf '%s\n' "$databases" | while IFS= read -r db; do
     [ -n "$db" ] || continue
-    echo "Backing up database: $db"
+    table_count=$(db_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${db}' AND TABLE_TYPE='BASE TABLE';") \
+      || die "Failed to query table count for database: $db"
+    echo "Backing up database: $db (${table_count} table(s))..."
     backup_one_database "$db" "$out_dir/${db}.sql.gz" "$degraded_routines_file"
+    echo "Completed database: $db"
   done
 
   echo "Backup complete: $out_dir"
@@ -424,9 +427,11 @@ dump_schema_with_package_status_fallback() {
     # apk/mariadb-client upgrade, check whether the error text changed.
     *"PACKAGE STATUS"*)
       # Discard whatever partial schema output the failed attempt may have
-      # already appended to $tmp_sql before retrying.
+      # already appended to $tmp_sql before retrying. Do not print a
+      # per-database warning here -- it fires once per affected database
+      # and is pure noise in a multi-database backup; cmd_backup prints a
+      # single summary line after the loop listing every degraded database.
       : > "$tmp_sql"
-      echo "WARNING: stored procedures/functions for database '$db' could not be backed up: mariadb-dump misdetected the server version and issued a 'SHOW PACKAGE STATUS' probe that this server does not support (this typically happens when the connection passes through MySQL Router or a similar proxy that alters the version string seen during the handshake; investigate the connection path). Continuing this backup without --routines for '$db'." >&2
       echo "$db" >> "$degraded_routines_file"
 
       db_mysqldump --no-data --triggers --events "$db" >> "$tmp_sql" \

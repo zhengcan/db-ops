@@ -93,6 +93,26 @@ teardown() {
   [[ "$data_pass_line" == *"--skip-events"* ]]
 }
 
+@test "backup prints per-database progress with table count and completion" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" backup \
+    --host h --port 3306 --user u --password p --database mydb
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Backing up database: mydb (3 table(s))"* ]]
+  [[ "$output" == *"Completed database: mydb"* ]]
+}
+
+@test "backup does not print a noisy per-database warning on PACKAGE STATUS fallback (only the final summary)" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" MYSQLDUMP_ROUTINES_FAIL=1 "$SCRIPT" backup \
+    --host h --port 3306 --user u --password p --database mydb
+  [ "$status" -eq 0 ]
+  # The old, noisy per-database inline warning must be gone...
+  [[ "$output" != *"could not be backed up: mariadb-dump misdetected"* ]]
+  # ...but the single end-of-run summary must still be present.
+  [[ "$output" == *"WARNING:"*"omitted due to a mariadb-dump version-detection issue"*"mydb"* ]]
+}
+
 @test "backup --dir places the timestamped directory under the given base path" {
   custom_base="$WORK_DIR/custom_backups"
   mkdir -p "$custom_base"
