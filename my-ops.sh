@@ -270,7 +270,7 @@ check_connection() {
 
 list_all_databases() {
   db_mysql -N -B -e \
-    "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys');"
+    "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys','mysql_innodb_cluster_metadata');"
 }
 
 # Resolves which databases to operate on based on --all-databases / --database
@@ -353,23 +353,78 @@ cmd_backup() {
   fi
   mkdir -p "$out_dir"
 
+  # Tracks which databases had routine dumping degraded (see
+  # dump_schema_with_package_status_fallback). The backup loop below runs as
+  # the receiving end of a pipe, i.e. in a subshell, so a plain variable set
+  # inside it would not survive past `done`; a temp file is used instead so
+  # the summary warning after the loop can see what happened inside it.
+  degraded_routines_file="$(mktemp)"
+  register_tmp_file "$degraded_routines_file"
+
   printf '%s\n' "$databases" | while IFS= read -r db; do
     [ -n "$db" ] || continue
     echo "Backing up database: $db"
-    backup_one_database "$db" "$out_dir/${db}.sql.gz"
+    backup_one_database "$db" "$out_dir/${db}.sql.gz" "$degraded_routines_file"
   done
 
   echo "Backup complete: $out_dir"
+
+  degraded_routines="$(tr '\n' ' ' < "$degraded_routines_file" | sed 's/ *$//')"
+  if [ -n "$degraded_routines" ]; then
+    degraded_count="$(printf '%s\n' "$degraded_routines" | tr ' ' '\n' | grep -c .)"
+    echo "WARNING: ${degraded_count} database(s) had stored routines/functions omitted due to a mariadb-dump version-detection issue: ${degraded_routines}" >&2
+  fi
+}
+
+# Runs the schema-only mysqldump pass (--no-data --routines --triggers
+# --events) for $db into $tmp_sql. If it fails because mariadb-dump
+# misdetected the server as MariaDB 10.3+ (recognizable by the `SHOW PACKAGE
+# STATUS` probe it issues for --routines, which MySQL servers reject with a
+# syntax error), discards the partial output, warns, and retries once
+# without --routines. Any other failure is fatal. On a routines-fallback,
+# appends $db to $degraded_routines_file so the caller can summarize it.
+dump_schema_with_package_status_fallback() {
+  db="$1"
+  tmp_sql="$2"
+  degraded_routines_file="$3"
+
+  err_file="$(mktemp)"
+  register_tmp_file "$err_file"
+
+  if db_mysqldump --no-data --routines --triggers --events "$db" \
+      >> "$tmp_sql" 2>"$err_file"; then
+    rm -f "$err_file"
+    return 0
+  fi
+
+  schema_err="$(cat "$err_file")"
+  rm -f "$err_file"
+
+  case "$schema_err" in
+    *"PACKAGE STATUS"*)
+      # Discard whatever partial schema output the failed attempt may have
+      # already appended to $tmp_sql before retrying.
+      : > "$tmp_sql"
+      echo "WARNING: stored procedures/functions for database '$db' could not be backed up: mariadb-dump misdetected the server version and issued a 'SHOW PACKAGE STATUS' probe that this server does not support (this typically happens when the connection passes through MySQL Router or a similar proxy that alters the version string seen during the handshake; investigate the connection path). Continuing this backup without --routines for '$db'." >&2
+      echo "$db" >> "$degraded_routines_file"
+
+      db_mysqldump --no-data --triggers --events "$db" >> "$tmp_sql" \
+        || die "Schema dump failed for database: $db (retry without --routines also failed; original error: $schema_err)"
+      ;;
+    *)
+      die "Schema dump failed for database: $db: $schema_err"
+      ;;
+  esac
 }
 
 backup_one_database() {
   db="$1"
   out_file="$2"
+  degraded_routines_file="$3"
   tmp_sql="$(mktemp)"
   register_tmp_file "$tmp_sql"
 
-  db_mysqldump --no-data --routines --triggers --events "$db" >> "$tmp_sql" \
-    || die "Schema dump failed for database: $db"
+  dump_schema_with_package_status_fallback "$db" "$tmp_sql" "$degraded_routines_file"
 
   db_mysqldump --no-create-info --complete-insert --skip-extended-insert \
     --hex-blob --single-transaction \

@@ -119,3 +119,50 @@ teardown() {
   zcat "$backup_dir/db_one.sql.gz" | grep -q "db=db_one"
   zcat "$backup_dir/db_two.sql.gz" | grep -q "db=db_two"
 }
+
+@test "list_all_databases excludes mysql_innodb_cluster_metadata from --all-databases" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" info \
+    --host h --port 3306 --user u --password p --all-databases
+  [ "$status" -eq 0 ]
+  grep -- "SCHEMA_NAME NOT IN" "$STUB_LOG" | grep -q "mysql_innodb_cluster_metadata"
+}
+
+@test "backup gracefully degrades when mariadb-dump misdetects server as MariaDB 10.3+ (SHOW PACKAGE STATUS error)" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" MYSQLDUMP_ROUTINES_FAIL=1 "$SCRIPT" backup \
+    --host h --port 3306 --user u --password p --database mydb
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mydb"* ]]
+  [[ "$output" == *"routine"* || "$output" == *"Routine"* || "$output" == *"stored procedure"* ]]
+  [[ "$output" == *"omitted"* || "$output" == *"WARNING"* ]]
+
+  backup_dir="$(ls -d "$WORK_DIR"/backup_* | tail -1)"
+  [ -f "$backup_dir/mydb.sql.gz" ]
+  dump="$(zcat "$backup_dir/mydb.sql.gz")"
+  [[ "$dump" == *"SCHEMA MARKER db=mydb"* ]]
+  [[ "$dump" == *"DATA MARKER db=mydb"* ]]
+  [[ "$dump" != *"partial, should be discarded"* ]]
+
+  retry_line="$(grep -- "--no-data" "$STUB_LOG" | tail -1)"
+  [[ "$retry_line" == *"--triggers"* ]]
+  [[ "$retry_line" == *"--events"* ]]
+  [[ "$retry_line" != *"--routines"* ]]
+
+  # Two schema-pass attempts should have been made: the failing --routines
+  # one and the successful retry without it.
+  no_data_calls="$(grep -c -- "--no-data" "$STUB_LOG")"
+  [ "$no_data_calls" -eq 2 ]
+}
+
+@test "backup does not retry without --routines when the schema dump fails for an unrelated reason" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" MYSQLDUMP_UNRELATED_FAIL=1 "$SCRIPT" backup \
+    --host h --port 3306 --user u --password p --database mydb
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Schema dump failed for database: mydb"* ]]
+  [[ "$output" == *"Access denied"* ]]
+
+  no_data_calls="$(grep -c -- "--no-data" "$STUB_LOG")"
+  [ "$no_data_calls" -eq 1 ]
+}

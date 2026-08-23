@@ -5,6 +5,29 @@
 # told apart in multi-database tests.
 echo "$0 $*" >> "${STUB_LOG:-/dev/null}"
 db="$(eval echo \${$#})"
+
+# Simulates the real-world mariadb-dump bug where --routines triggers a
+# `SHOW PACKAGE STATUS` probe that fails against a MySQL server. Only fails
+# when --routines is present; a retry without --routines succeeds normally.
+if [ "${MYSQLDUMP_ROUTINES_FAIL:-0}" = "1" ]; then
+  case "$*" in
+    *--routines*)
+      echo "-- SCHEMA MARKER db=${db} (partial, should be discarded)"
+      echo "mariadb-dump: Couldn't execute 'SHOW PACKAGE STATUS WHERE Db = '${db}'': You have an error in your SQL syntax (1064)" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+if [ "${MYSQLDUMP_UNRELATED_FAIL:-0}" = "1" ]; then
+  case "$*" in
+    *--no-data*)
+      echo "mariadb-dump: Got error: 1045: Access denied for user (using password: YES) when trying to connect" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 case "$*" in
   *--no-data*) echo "-- SCHEMA MARKER db=${db}" ;;
   *--no-create-info*) echo "-- DATA MARKER db=${db}" ;;
