@@ -280,6 +280,83 @@ setup() {
   rm -rf "$fake_bin" "$STUB_LOG"
 }
 
+@test "db_mysqladmin prefers mariadb-admin over mysqladmin when both are present" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass ensure_dependencies; db_mysqladmin ping"
+  [ "$status" -eq 0 ]
+  grep -q "mariadb-admin" "$STUB_LOG"
+  ! grep -q -- "/mysqladmin " "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
+@test "db_mysql prefers mariadb over mysql when both are present" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass ensure_dependencies; db_mysql -e 'SELECT 1'"
+  [ "$status" -eq 0 ]
+  grep -q -- "/mariadb " "$STUB_LOG"
+  ! grep -q -- "/mysql " "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
+@test "db_mysqldump prefers mariadb-dump over mysqldump when both are present" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass ensure_dependencies; db_mysqldump somedb"
+  [ "$status" -eq 0 ]
+  grep -q "mariadb-dump" "$STUB_LOG"
+  ! grep -q -- "/mysqldump " "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
+@test "db_mysqladmin falls back to mysqladmin when mariadb-admin is absent" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs/mysql_only"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass ensure_dependencies; db_mysqladmin ping"
+  [ "$status" -eq 0 ]
+  grep -q -- "/mysqladmin " "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
+@test "ensure_dependencies is a no-op when only mariadb-flavored binaries are present" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs/mariadb_only"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" sh -c ". '$SCRIPT'; ensure_dependencies"
+  [ "$status" -eq 0 ]
+  # apk stub is not on PATH at all in this scenario, so if ensure_dependencies
+  # tried to install anything it would fail with "apk not found" (status 1).
+  [ ! -s "$STUB_LOG" ]
+}
+
+@test "ensure_dependencies sets MYSQL_BIN/MYSQLDUMP_BIN/MYSQLADMIN_BIN to mariadb names when present" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs/mariadb_only"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 sh -c "
+    . '$SCRIPT'
+    ensure_dependencies
+    [ \"\$MYSQL_BIN\" = mariadb ] || exit 1
+    [ \"\$MYSQLDUMP_BIN\" = mariadb-dump ] || exit 1
+    [ \"\$MYSQLADMIN_BIN\" = mariadb-admin ] || exit 1
+  "
+  [ "$status" -eq 0 ]
+}
+
+@test "ensure_dependencies keeps MYSQL_BIN/MYSQLDUMP_BIN/MYSQLADMIN_BIN as mysql names when mariadb is absent" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs/mysql_only"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 sh -c "
+    . '$SCRIPT'
+    ensure_dependencies
+    [ \"\$MYSQL_BIN\" = mysql ] || exit 1
+    [ \"\$MYSQLDUMP_BIN\" = mysqldump ] || exit 1
+    [ \"\$MYSQLADMIN_BIN\" = mysqladmin ] || exit 1
+  "
+  [ "$status" -eq 0 ]
+}
+
 @test "validate_identifier accepts alphanumeric and underscore names" {
   run validate_identifier "my_db_1"
   [ "$status" -eq 0 ]

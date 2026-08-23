@@ -140,9 +140,34 @@ cleanup_common() {
 }
 trap cleanup_common EXIT INT TERM
 
+MYSQL_BIN="mysql"
+MYSQLDUMP_BIN="mysqldump"
+MYSQLADMIN_BIN="mysqladmin"
+
+# Prefer the non-deprecated mariadb/mariadb-dump/mariadb-admin binaries when
+# available, falling back to the mysql/mysqldump/mysqladmin compatibility
+# shims otherwise. Using the mariadb-* names directly avoids the
+# "Deprecated program name" warning those shims print on stderr.
+detect_mysql_binaries() {
+  command -v mariadb >/dev/null 2>&1 && MYSQL_BIN="mariadb"
+  command -v mariadb-dump >/dev/null 2>&1 && MYSQLDUMP_BIN="mariadb-dump"
+  command -v mariadb-admin >/dev/null 2>&1 && MYSQLADMIN_BIN="mariadb-admin"
+  return 0
+}
+
+# Returns success if either name of a mysql-family tool is available
+# (e.g. "mysql" or "mariadb"), since a mariadb-client install may only
+# provide the newer mariadb-* names.
+_have_either() {
+  command -v "$1" >/dev/null 2>&1 || command -v "$2" >/dev/null 2>&1
+}
+
 ensure_dependencies() {
   need_install=0
-  for bin in mysql mysqldump mysqladmin gzip gawk; do
+  _have_either mysql mariadb || need_install=1
+  _have_either mysqldump mariadb-dump || need_install=1
+  _have_either mysqladmin mariadb-admin || need_install=1
+  for bin in gzip gawk; do
     if ! command -v "$bin" >/dev/null 2>&1; then
       need_install=1
     fi
@@ -154,9 +179,14 @@ ensure_dependencies() {
       || die "Failed to install dependencies via apk"
   fi
 
-  for bin in mysql mysqldump mysqladmin gzip gawk; do
+  _have_either mysql mariadb || die "Required command still missing after install: mysql/mariadb"
+  _have_either mysqldump mariadb-dump || die "Required command still missing after install: mysqldump/mariadb-dump"
+  _have_either mysqladmin mariadb-admin || die "Required command still missing after install: mysqladmin/mariadb-admin"
+  for bin in gzip gawk; do
     command -v "$bin" >/dev/null 2>&1 || die "Required command still missing after install: $bin"
   done
+
+  detect_mysql_binaries
 }
 
 # ===================== Connection helpers =====================
@@ -192,7 +222,7 @@ db_mysql() {
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
     "$@"
-  mysql "$@"
+  $MYSQL_BIN "$@"
 }
 
 db_mysqldump() {
@@ -205,7 +235,7 @@ db_mysqldump() {
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
     "$@"
-  mysqldump "$@"
+  $MYSQLDUMP_BIN "$@"
 }
 
 db_mysqladmin() {
@@ -218,7 +248,7 @@ db_mysqladmin() {
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
     "$@"
-  mysqladmin "$@"
+  $MYSQLADMIN_BIN "$@"
 }
 
 check_connection() {
