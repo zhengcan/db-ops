@@ -533,6 +533,10 @@ restore_one_database() {
 usage() {
   cat <<'EOF'
 Usage: my-ops.sh <command> [options]
+       my-ops.sh [options] <command> [options]
+
+Global options may be placed before the command, after the command, or
+mixed on both sides, in any order.
 
 Commands:
   info      Show connection status and object overview
@@ -565,8 +569,37 @@ main() {
     exit 1
   fi
 
-  cmd="$1"
-  shift
+  # Scan all args (read-only, no shifting) to find the command word,
+  # wherever it appears. This allows global options to be placed before
+  # the command, after it, or mixed on both sides. Values belonging to
+  # options that take one (e.g. --host foo) are skipped so they can
+  # never be mistaken for the command, even if they happen to look like
+  # one (e.g. --host backup).
+  cmd=""
+  skip_next=0
+  for arg in "$@"; do
+    if [ "$skip_next" -eq 1 ]; then
+      skip_next=0
+      continue
+    fi
+    case "$arg" in
+      --config|--host|--port|--user|--password|--database|--dir)
+        skip_next=1
+        ;;
+      info|backup|restore|help|-h|--help)
+        if [ -z "$cmd" ]; then
+          cmd="$arg"
+        fi
+        ;;
+      *)
+        ;;
+    esac
+  done
+
+  if [ -z "$cmd" ]; then
+    usage
+    exit 1
+  fi
 
   extract_config_file "$@"
   CONFIG_FILE="$_EXTRACTED_CONFIG_FILE"
@@ -587,7 +620,6 @@ main() {
       usage
       ;;
     *)
-      echo "Unknown command: $cmd" >&2
       usage
       exit 1
       ;;

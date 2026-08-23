@@ -266,6 +266,62 @@ setup() {
   [[ "$output" == *"DB_HOST=clihost"* ]]
 }
 
+@test "main accepts --config before the command" {
+  cfg="$(mktemp)"
+  printf 'DB_HOST=cfghost\n' > "$cfg"
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main --config "'"$cfg"'" help; echo "DB_HOST=$DB_HOST"'
+  rm -f "$cfg"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DB_HOST=cfghost"* ]]
+}
+
+@test "main sets common options placed before the command" {
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main --host myhost --port 3307 --database mydb help; echo "DB_HOST=$DB_HOST DB_PORT=$DB_PORT DB_DATABASE=$DB_DATABASE"'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DB_HOST=myhost DB_PORT=3307 DB_DATABASE=mydb"* ]]
+}
+
+@test "main still supports the legacy command-first syntax" {
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main help --host myhost --database mydb; echo "DB_HOST=$DB_HOST DB_DATABASE=$DB_DATABASE"'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DB_HOST=myhost DB_DATABASE=mydb"* ]]
+}
+
+@test "main supports options mixed before and after the command" {
+  cfg="$(mktemp)"
+  printf 'DB_HOST=cfghost\n' > "$cfg"
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main --config "'"$cfg"'" help --database mydb --force; echo "DB_HOST=$DB_HOST DB_DATABASE=$DB_DATABASE FORCE=$FORCE"'
+  rm -f "$cfg"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DB_HOST=cfghost DB_DATABASE=mydb FORCE=1"* ]]
+}
+
+@test "main prints usage and exits non-zero when only options are given with no command" {
+  cfg="$(mktemp)"
+  printf 'DB_HOST=cfghost\n' > "$cfg"
+
+  run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main --config "'"$cfg"'"'
+  rm -f "$cfg"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Usage:"* ]]
+}
+
+@test "main does not mistake a flag value for the command even if it names a command" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs/query_aware"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=0 STUB_LOG="$STUB_LOG" "$SCRIPT" \
+    --host backup --port 3306 --user u --password p info --database mydb
+  rm -f "$STUB_LOG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Connection OK"* ]]
+  [[ "$output" == *"Database: mydb"* ]]
+}
+
 @test "ensure_dependencies installs missing packages via apk" {
   fake_bin="$(mktemp -d)"
   cp "$BATS_TEST_DIRNAME/stubs/apk" "$fake_bin/apk"
