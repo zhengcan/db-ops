@@ -401,6 +401,12 @@ dump_schema_with_package_status_fallback() {
   rm -f "$err_file"
 
   case "$schema_err" in
+    # NOTE: fragile-by-design substring match against mariadb-dump's exact
+    # error text. If a future mariadb-dump version changes this wording
+    # (localization, "PACKAGE BODY STATUS" instead, etc.), this fallback
+    # will silently stop triggering and the schema dump will just die()
+    # with the original error -- if this fix "stops working" after an
+    # apk/mariadb-client upgrade, check whether the error text changed.
     *"PACKAGE STATUS"*)
       # Discard whatever partial schema output the failed attempt may have
       # already appended to $tmp_sql before retrying.
