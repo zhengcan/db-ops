@@ -22,6 +22,19 @@ die() {
   exit 1
 }
 
+# Single source of truth for "which global options consume the following
+# argument as their value". Used both by the argument parsers below and by
+# main()'s command-word scan (which must skip these values so it never
+# mistakes one for the command name, e.g. `--host backup info`). If you add
+# a new value-taking global option, update this function AND the matching
+# `case` arm in parse_common_args()/extract_config_file() together.
+_is_value_flag() {
+  case "$1" in
+    --config|--host|--port|--user|--password|--database|--dir) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 parse_common_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -582,10 +595,11 @@ main() {
       skip_next=0
       continue
     fi
+    if _is_value_flag "$arg"; then
+      skip_next=1
+      continue
+    fi
     case "$arg" in
-      --config|--host|--port|--user|--password|--database|--dir)
-        skip_next=1
-        ;;
       info|backup|restore|help|-h|--help)
         if [ -z "$cmd" ]; then
           cmd="$arg"

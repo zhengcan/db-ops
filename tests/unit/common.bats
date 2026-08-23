@@ -318,7 +318,9 @@ setup() {
     --host backup --port 3306 --user u --password p info --database mydb
   rm -f "$STUB_LOG"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Connection OK"* ]]
+  # --host's value ("backup") must be used as DB_HOST, not misread as the
+  # command; the real command ("info") must still be dispatched correctly.
+  [[ "$output" == *"Connection OK: u@backup:3306"* ]]
   [[ "$output" == *"Database: mydb"* ]]
 }
 
