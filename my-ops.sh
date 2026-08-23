@@ -222,7 +222,7 @@ db_mysql() {
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
     "$@"
-  $MYSQL_BIN "$@"
+  "$MYSQL_BIN" "$@"
 }
 
 db_mysqldump() {
@@ -235,7 +235,7 @@ db_mysqldump() {
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
     "$@"
-  $MYSQLDUMP_BIN "$@"
+  "$MYSQLDUMP_BIN" "$@"
 }
 
 db_mysqladmin() {
@@ -248,7 +248,7 @@ db_mysqladmin() {
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
     "$@"
-  $MYSQLADMIN_BIN "$@"
+  "$MYSQLADMIN_BIN" "$@"
 }
 
 check_connection() {
