@@ -94,6 +94,20 @@ validate_identifier() {
   esac
 }
 
+# Sanitizes an arbitrary string for safe use as a single path component
+# (e.g. a hostname embedded in a backup directory path). Unlike
+# validate_identifier (which rejects anything outside its allowlist),
+# this function is permissive: any character outside the allowlist of
+# letters, digits, '.', '-', and '_' is replaced with '_' rather than
+# causing the script to abort. This is deliberately more lenient because
+# the value can come from --host / $DB_HOST, which may legitimately
+# contain dots (FQDNs) or dashes, but must never be allowed to inject
+# path separators ('/') or otherwise escape the intended directory
+# structure (e.g. via '..'). The sanitized result is written to stdout.
+sanitize_path_component() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
 split_csv() {
   printf '%s\n' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | { grep -v '^$' || true; }
 }
@@ -349,7 +363,8 @@ cmd_backup() {
     [ -d "$BACKUP_DIR" ] || die "Backup base directory not found: $BACKUP_DIR"
     out_dir="${BACKUP_DIR%/}/backup_${timestamp}"
   else
-    out_dir="backup_${timestamp}"
+    safe_host="$(sanitize_path_component "$DB_HOST")"
+    out_dir="backup/mysql/${safe_host}/${timestamp}"
   fi
   mkdir -p "$out_dir"
 
@@ -628,7 +643,9 @@ backup options:
   --database <db1,db2>  Comma-separated list of databases to back up
   --all-databases        Back up all non-system databases
   --dir <path>           Base directory to place the timestamped backup_<ts>/
-                         folder in (default: current directory)
+                         folder in (default: backup/mysql/<host>/<timestamp>/
+                         under the current directory, where <host> is the
+                         sanitized --host value)
 
 restore options:
   --dir <backup_dir>     Backup directory produced by 'backup'

@@ -69,7 +69,12 @@
 
 ### 输出结构
 
-- 每次执行创建一个带时间戳的目录：`backup_<YYYYMMDD_HHMMSS>/`
+- 每次执行创建一个带时间戳的目录。
+  - 未指定 `--dir` 时（默认行为）：`backup/mysql/<host>/<YYYYMMDD_HHMMSS>/`
+    （相对当前工作目录），其中 `<host>` 是 `--host`/`$DB_HOST` 经清洗后的值，
+    仅保留字母、数字、`.`、`-`、`_`，其余字符（尤其是 `/`）替换为 `_`，防止
+    异常主机名破坏目录结构或产生路径穿越风险。
+  - 指定 `--dir <base>` 时：`<base>/backup_<YYYYMMDD_HHMMSS>/`（行为不变）。
 - 每个库输出一个独立文件：`<backup_dir>/<db>.sql.gz`
 
 ### 单库导出流程
@@ -215,7 +220,7 @@
 2. 执行 `./my-ops.sh info` 验证连接成功（自签名证书不报错）且对象概览
    数量正确
 3. 执行 `./my-ops.sh backup --database <db>`，验证目录结构
-   `backup_<timestamp>/<db>.sql.gz` 生成正确
+   `backup/mysql/<host>/<timestamp>/<db>.sql.gz` 生成正确
 4. 执行 `./my-ops.sh restore --dir <backup_dir> --database <db>`，验证：
    - 表结构、索引、约束与源库一致
    - 生成列（虚拟/存储）恢复后计算结果与源库一致

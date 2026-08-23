@@ -53,13 +53,20 @@ query_testdb() {
 }
 
 latest_backup_dir() {
-  # $1: optional subdirectory to look under (relative to /work), default /work itself
+  # $1: optional subdirectory to look under (relative to /work), default /work
+  # itself. When looking under the default location, backups now land in
+  # backup/mysql/<host>/<timestamp>/ rather than a top-level backup_<ts>/
+  # directory, so we locate it by finding the timestamp-named leaf directory.
   base="${1:-.}"
-  run_in_alpine "ls -d ${base}/backup_* | tail -1"
+  if [ "$base" = "." ]; then
+    run_in_alpine "find backup/mysql -mindepth 2 -maxdepth 2 -type d -name '2*' | tail -1"
+  else
+    run_in_alpine "ls -d ${base}/backup_* | tail -1"
+  fi
 }
 
 @test "end to end: info, backup, restore reproduce all object types and data" {
-  run run_in_alpine "rm -rf backup_*; ./my-ops.sh info --host mysql --port 3306 --user root --password rootpass --database testdb"
+  run run_in_alpine "rm -rf backup; ./my-ops.sh info --host mysql --port 3306 --user root --password rootpass --database testdb"
   [ "$status" -eq 0 ]
 
   run run_in_alpine "./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
@@ -124,7 +131,7 @@ latest_backup_dir() {
   [ "$status" -eq 0 ]
   expected_count="$output"
 
-  run run_in_alpine "rm -rf backup_*; ./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
+  run run_in_alpine "rm -rf backup; ./my-ops.sh backup --host mysql --port 3306 --user root --password rootpass --database testdb"
   [ "$status" -eq 0 ]
   backup_dir="$(latest_backup_dir)"
 

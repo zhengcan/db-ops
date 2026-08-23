@@ -73,7 +73,7 @@ teardown() {
     --host h --port 3306 --user u --password p --database mydb
   [ "$status" -eq 0 ]
 
-  backup_dir="$(ls -d "$WORK_DIR"/backup_* | tail -1)"
+  backup_dir="$(ls -d "$WORK_DIR"/backup/mysql/h/* | tail -1)"
   [ -f "$backup_dir/mydb.sql.gz" ]
 
   dump="$(zcat "$backup_dir/mydb.sql.gz")"
@@ -105,6 +105,7 @@ teardown() {
   [ -f "$backup_dir/mydb.sql.gz" ]
   # Nothing should have been created directly under WORK_DIR itself.
   [ -z "$(ls -d "$WORK_DIR"/backup_* 2>/dev/null)" ]
+  [ -z "$(ls -d "$WORK_DIR"/backup 2>/dev/null)" ]
 }
 
 @test "backup --all-databases backs up every discovered database into separate files" {
@@ -113,7 +114,7 @@ teardown() {
     --host h --port 3306 --user u --password p --all-databases
   [ "$status" -eq 0 ]
 
-  backup_dir="$(ls -d "$WORK_DIR"/backup_* | tail -1)"
+  backup_dir="$(ls -d "$WORK_DIR"/backup/mysql/h/* | tail -1)"
   [ -f "$backup_dir/db_one.sql.gz" ]
   [ -f "$backup_dir/db_two.sql.gz" ]
   zcat "$backup_dir/db_one.sql.gz" | grep -q "db=db_one"
@@ -137,7 +138,7 @@ teardown() {
   [[ "$output" == *"routine"* || "$output" == *"Routine"* || "$output" == *"stored procedure"* ]]
   [[ "$output" == *"omitted"* || "$output" == *"WARNING"* ]]
 
-  backup_dir="$(ls -d "$WORK_DIR"/backup_* | tail -1)"
+  backup_dir="$(ls -d "$WORK_DIR"/backup/mysql/h/* | tail -1)"
   [ -f "$backup_dir/mydb.sql.gz" ]
   dump="$(zcat "$backup_dir/mydb.sql.gz")"
   [[ "$dump" == *"SCHEMA MARKER db=mydb"* ]]
@@ -165,4 +166,48 @@ teardown() {
 
   no_data_calls="$(grep -c -- "--no-data" "$STUB_LOG")"
   [ "$no_data_calls" -eq 1 ]
+}
+
+@test "backup without --dir uses backup/mysql/<host>/<timestamp>/ as the default path" {
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" backup \
+    --host mysql.internal --port 3306 --user u --password p --database mydb
+  [ "$status" -eq 0 ]
+
+  matches=("$WORK_DIR"/backup/mysql/mysql.internal/*/mydb.sql.gz)
+  [ -f "${matches[0]}" ]
+}
+
+@test "sanitize_path_component replaces path-unsafe characters in a hostname with underscores" {
+  # Sourcing the full script would execute main() with no args; DB_OPS_TEST
+  # suppresses that so we can call the helper function directly.
+  run env DB_OPS_TEST=1 bash -c '
+    . "'"$SCRIPT"'"
+    sanitize_path_component "evil/../host"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "evil_.._host" ]
+}
+
+@test "sanitize_path_component leaves legitimate hostnames with dots and dashes untouched" {
+  run env DB_OPS_TEST=1 bash -c '
+    . "'"$SCRIPT"'"
+    sanitize_path_component "db-01.internal.example.com"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "db-01.internal.example.com" ]
+}
+
+@test "backup --dir behavior is unchanged (regression): still backup_<timestamp>/ under given base" {
+  custom_base="$WORK_DIR/custom_backups2"
+  mkdir -p "$custom_base"
+  cd "$WORK_DIR"
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" backup \
+    --host h --port 3306 --user u --password p --database mydb --dir "$custom_base"
+  [ "$status" -eq 0 ]
+
+  backup_dir="$(ls -d "$custom_base"/backup_* | tail -1)"
+  [ -f "$backup_dir/mydb.sql.gz" ]
+  [[ "$backup_dir" == *"/backup_"* ]]
+  [ -z "$(ls -d "$custom_base"/mysql 2>/dev/null)" ]
 }

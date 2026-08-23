@@ -16,19 +16,20 @@
 # 检查连通性并查看将被备份的内容
 ./my-ops.sh info --host mysql --port 3306 --user root --password secret --database mydb
 
-# 备份一个或多个数据库（默认在当前目录生成 backup_<timestamp>/<db>.sql.gz）
+# 备份一个或多个数据库（默认在当前目录生成 backup/mysql/<host>/<timestamp>/<db>.sql.gz，
+# 其中 <host> 是 --host/DB_HOST 经清洗后的值，仅保留字母、数字、'.'、'-'、'_'）
 ./my-ops.sh backup --host mysql --port 3306 --user root --password secret --database mydb
 ./my-ops.sh backup --host mysql --port 3306 --user root --password secret --database db1,db2
 ./my-ops.sh backup --host mysql --port 3306 --user root --password secret --all-databases
 
-# 用 --dir 指定备份存放的基础目录（会在该目录下创建 backup_<timestamp>/）
+# 用 --dir 指定备份存放的基础目录（会在该目录下创建 backup_<timestamp>/，行为不变）
 ./my-ops.sh backup --host mysql --port 3306 --user root --password secret --database mydb --dir /srv/backups
 
 # 从备份目录恢复一个或多个数据库（破坏性操作：DROP + CREATE）
 ./my-ops.sh restore --host mysql --port 3306 --user root --password secret \
-  --dir backup_20260819_120000 --database mydb
+  --dir backup/mysql/mysql/20260819_120000 --database mydb
 ./my-ops.sh restore --host mysql --port 3306 --user root --password secret \
-  --dir backup_20260819_120000 --database mydb --force
+  --dir backup/mysql/mysql/20260819_120000 --database mydb --force
 ```
 
 注意：`--dir` 在 `backup` 和 `restore` 中的含义不同——`backup` 场景下它是
