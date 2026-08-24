@@ -80,19 +80,22 @@ setup() {
   [[ "$output" == *"--config requires a value"* ]]
 }
 
-@test "load_config sources a KEY=VALUE config file" {
+@test "load_config_instance loads type/host/port/user/password/database for the given instance" {
   cfg="$(mktemp)"
-  printf 'DB_HOST=cfghost\nDB_USER=cfguser\n' > "$cfg"
-  CONFIG_FILE="$cfg"
-  load_config
+  printf '[prod]\ntype = mysql\nhost = cfghost\nport=3307\nuser=cfguser\npassword=cfgpass\ndatabase=cfgdb\n' > "$cfg"
+  load_config_instance "$cfg" prod
+  [ "$CONFIG_INSTANCE_TYPE" = "mysql" ]
   [ "$DB_HOST" = "cfghost" ]
+  [ "$DB_PORT" = "3307" ]
   [ "$DB_USER" = "cfguser" ]
+  [ "$DB_PASSWORD" = "cfgpass" ]
+  [ "$DB_DATABASE" = "cfgdb" ]
   rm -f "$cfg"
 }
 
-@test "load_config dies when config file is missing" {
+@test "resolve_config_instance dies when config file is missing" {
   CONFIG_FILE="/nonexistent/file.cfg"
-  run load_config
+  run resolve_config_instance
   [ "$status" -eq 1 ]
   [[ "$output" == *"ERROR"* ]]
 }
@@ -257,7 +260,7 @@ setup() {
 
 @test "main loads config before parsing CLI args so CLI args take precedence" {
   cfg="$(mktemp)"
-  printf 'DB_HOST=cfghost\n' > "$cfg"
+  printf '[cfg]\ntype = mysql\nhost = cfghost\n' > "$cfg"
 
   run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main help --config "'"$cfg"'" --host clihost; echo "DB_HOST=$DB_HOST"'
   rm -f "$cfg"
@@ -268,7 +271,7 @@ setup() {
 
 @test "main accepts --config before the command" {
   cfg="$(mktemp)"
-  printf 'DB_HOST=cfghost\n' > "$cfg"
+  printf '[cfg]\ntype = mysql\nhost = cfghost\n' > "$cfg"
 
   run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main --config "'"$cfg"'" help; echo "DB_HOST=$DB_HOST"'
   rm -f "$cfg"
@@ -291,7 +294,7 @@ setup() {
 
 @test "main supports options mixed before and after the command" {
   cfg="$(mktemp)"
-  printf 'DB_HOST=cfghost\n' > "$cfg"
+  printf '[cfg]\ntype = mysql\nhost = cfghost\n' > "$cfg"
 
   run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main --config "'"$cfg"'" help --database mydb --force; echo "DB_HOST=$DB_HOST DB_DATABASE=$DB_DATABASE FORCE=$FORCE"'
   rm -f "$cfg"
@@ -302,7 +305,7 @@ setup() {
 
 @test "main prints usage and exits non-zero when only options are given with no command" {
   cfg="$(mktemp)"
-  printf 'DB_HOST=cfghost\n' > "$cfg"
+  printf '[cfg]\ntype = mysql\nhost = cfghost\n' > "$cfg"
 
   run bash -c 'export DB_OPS_TEST=1; . "'"$SCRIPT"'"; main --config "'"$cfg"'"'
   rm -f "$cfg"

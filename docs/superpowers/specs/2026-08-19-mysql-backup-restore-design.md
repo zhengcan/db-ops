@@ -27,13 +27,22 @@
 
 ## 配置
 
-- `--config <file>`：KEY=VALUE 风格配置文件（如 `DB_HOST=`、`DB_PORT=`、
-  `DB_USER=`、`DB_PASSWORD=`、`DB_NAME=`），脚本 `source` 载入
+- `--config <file>`：INI 风格、多实例、非可执行的纯文本配置文件（默认文件名
+  `dbs.conf`，若当前目录存在且未显式传 `--config` 则自动使用）。每个
+  `[实例名]` 段落定义一个实例的 `type`/`host`/`port`/`user`/`password`/
+  `database` 字段
+  - 恰好 1 个实例时自动选用；2 个及以上时必须用 `--instance <名字>` 指定，
+    否则报错并列出可选项
+  - 选中实例的 `type` 字段必须是 `mysql`（大小写不敏感），否则报错——本工具
+    只支持 MySQL/MariaDB 实例
+  - 未指定 `--config` 且当前目录不存在 `dbs.conf` 时，完全跳过配置文件机制，
+    行为与纯命令行用法完全一致
 - 命令行参数可覆盖同名配置项，优先级：命令行 > 配置文件
   - `--host` `--port` `--user` `--password` `--database` `--all-databases`
-    `--force` `--dir` `--config`
+    `--force` `--dir` `--config` `--instance`
 - 密码建议通过 `DB_PASSWORD` 环境变量或配置文件传入，避免明文出现在命令行
   历史/进程列表中
+
 
 ## 连接安全（自签名 TLS）
 
@@ -173,12 +182,12 @@
 - 脚本假定运行环境可直接网络访问 MySQL 服务（端口转发 / NodePort /
   ClusterIP 均可，只要网络可达），不依赖 `kubectl exec` 或作为 k8s
   Job/CronJob 运行
-- `--config <file>` 是通过 shell `.` (source) 直接执行的，等价于在当前
-  shell 中执行任意代码，而不是一个受限的 KEY=VALUE 解析器。这一设计假定
-  配置文件来源可信（本地文件系统、由运维人员自己维护）；如果配置文件路径
-  可能来自不可信输入（例如由外部系统拼接生成、或来自用户可控的上传内容），
-  这里就是一个任意代码执行点。本次修复不改变这一实现方式（保持 shell 原生、
-  零依赖），仅将其记录为已知的信任边界。
+- **[已解决，见 2026-08-24 更新]** `--config <file>` 曾经是通过 shell `.`
+  (source) 直接执行的，等价于在当前 shell 中执行任意代码，而不是一个受限的
+  KEY=VALUE 解析器，这曾是一个已知的信任边界/任意代码执行风险点。新版
+  `dbs.conf`（INI 风格、多实例）改为纯文本逐行解析（`while read` + `case`/
+  字符串处理），不再对配置文件内容做任何形式的 `source`/`eval`，因此该风险
+  已不复存在。
 - `mysqldump --routines --triggers --events` 默认会在存储过程/触发器/事件
   的 DDL 中带上 `DEFINER=` 子句。恢复到目标服务器时，如果该 DEFINER 对应
   的用户在目标服务器上不存在，创建这些对象通常仍会成功（MySQL/MariaDB

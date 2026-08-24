@@ -37,25 +37,50 @@
 
 ## 配置文件
 
-除了传参，也可以使用 KEY=VALUE 风格的配置文件：
+除了传参，也可以使用 INI 风格的多实例配置文件，默认文件名 `dbs.conf`：
 
-```sh
-# db.conf
-DB_HOST=mysql.example.internal
-DB_PORT=3306
-DB_USER=backup_user
-DB_PASSWORD=secret
+```ini
+# dbs.conf
+[prod]
+type = mysql
+host = mysql.example.internal
+port = 3306
+user = backup_user
+password = secret
+database = mydb
+
+[staging]
+type = mysql
+host = staging.example.internal
+port = 3306
+user = backup_user
+password = secret
 ```
 
+- 当前目录下存在 `dbs.conf` 且未显式传 `--config` 时，会自动加载它；不存在时完全不
+  影响现有纯命令行/环境变量用法。
+- 也可以用 `--config <path>` 显式指定其他路径的配置文件（同样的格式）。
+- 配置文件里只定义了 **1 个** 实例时，会自动选用它，无需再传 `--instance`。
+- 配置文件里定义了 **2 个及以上** 实例时，必须通过 `--instance <名字>` 指定使用哪个，
+  否则会报错并列出所有可选实例名。
+- 每个实例段落里的 `type` 字段必须是 `mysql`（大小写不敏感），否则会报错——本工具
+  目前只支持 MySQL/MariaDB 实例。
+
 ```sh
-./my-ops.sh info --config db.conf --database mydb
+# 只有一个实例时，自动选用
+./my-ops.sh info --database mydb
+
+# 显式指定配置文件路径与实例名
+./my-ops.sh info --config dbs.conf --instance prod --database mydb
 ```
 
-命令行参数始终会覆盖配置文件中的同名值。建议通过 `DB_PASSWORD` 环境变量传递密码，
-而不是 `--password` 参数或配置文件，以避免密码留存在 shell 历史或磁盘上。
+命令行参数（`--host`/`--port`/`--user`/`--password`/`--database` 等）始终会覆盖配置
+实例中的同名字段。建议通过 `DB_PASSWORD` 环境变量传递密码，而不是 `--password` 参数
+或配置文件，以避免密码留存在 shell 历史或磁盘上。
 
-**注意：`--config` 指定的文件是直接以 shell 脚本方式 `source` 进来的，等同于可执行
-shell 代码，请勿使用不可信来源的配置文件。**
+`dbs.conf` 是纯文本格式，按 `key = value` 逐行解析（不需要引号包裹值），不会被当作
+可执行 shell 代码 `source`，因此不存在旧版本中"配置文件等同任意可执行 shell 代码"的
+风险。
 
 ## TLS
 

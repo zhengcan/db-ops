@@ -12,6 +12,9 @@ DB_ALL_DATABASES=0
 FORCE=0
 BACKUP_DIR=""
 CONFIG_FILE=""
+INSTANCE_NAME=""
+CONFIG_INSTANCE_TYPE=""
+DEFAULT_CONFIG_FILE="dbs.conf"
 
 _TMP_DEFAULTS_FILE=""
 _TMP_FILES_TO_CLEAN=""
@@ -30,7 +33,7 @@ die() {
 # `case` arm in parse_common_args()/extract_config_file() together.
 _is_value_flag() {
   case "$1" in
-    --config|--host|--port|--user|--password|--database|--dir) return 0 ;;
+    --config|--instance|--host|--port|--user|--password|--database|--dir) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -39,6 +42,7 @@ parse_common_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --config) [ "$#" -ge 2 ] || die "--config requires a value"; CONFIG_FILE="$2"; shift 2 ;;
+      --instance) [ "$#" -ge 2 ] || die "--instance requires a value"; INSTANCE_NAME="$2"; shift 2 ;;
       --host) [ "$#" -ge 2 ] || die "--host requires a value"; DB_HOST="$2"; shift 2 ;;
       --port) [ "$#" -ge 2 ] || die "--port requires a value"; DB_PORT="$2"; shift 2 ;;
       --user) [ "$#" -ge 2 ] || die "--user requires a value"; DB_USER="$2"; shift 2 ;;
@@ -52,28 +56,161 @@ parse_common_args() {
   done
 }
 
-# Scans "$@" for a `--config <file>` option only (does not parse any
-# other options) and stores the result in $_EXTRACTED_CONFIG_FILE. Used
-# by main() to discover CONFIG_FILE before load_config runs, so that
+# Scans "$@" for `--config <file>` and `--instance <name>` options only
+# (does not parse any other options) and stores the results in
+# $_EXTRACTED_CONFIG_FILE / $_EXTRACTED_INSTANCE. Used by main() to discover
+# CONFIG_FILE/INSTANCE_NAME before resolve_config_instance runs, so that
 # config-file defaults can be established prior to the full CLI parse
 # (which must take precedence over the config file).
 extract_config_file() {
   _EXTRACTED_CONFIG_FILE=""
+  _EXTRACTED_INSTANCE=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --config) [ "$#" -ge 2 ] || die "--config requires a value"; _EXTRACTED_CONFIG_FILE="$2"; shift 2 ;;
+      --instance) [ "$#" -ge 2 ] || die "--instance requires a value"; _EXTRACTED_INSTANCE="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
 }
 
-load_config() {
+# Parses an INI-style config file and prints one instance name per line
+# (the text inside each `[name]` section header), in the order they appear.
+# Lines that don't look like `[name]` (including comments and blank lines)
+# are ignored.
+list_config_instances() {
+  file="$1"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      \[*\])
+        name="${line#\[}"
+        name="${name%\]}"
+        printf '%s\n' "$name"
+        ;;
+      *) ;;
+    esac
+  done < "$file"
+}
+
+# Parses an INI-style config file and loads the `type`/`host`/`port`/`user`/
+# `password`/`database` fields of the `[instance_name]` section into
+# CONFIG_INSTANCE_TYPE / DB_HOST / DB_PORT / DB_USER / DB_PASSWORD /
+# DB_DATABASE respectively. Only fields present with a non-empty value in
+# the section overwrite the corresponding global; other globals are left
+# untouched (so CLI/env defaults established earlier still stand for any
+# field the instance doesn't define). Unknown keys are ignored. Lines
+# starting with `#` or `;` and blank lines are ignored. Both `key = value`
+# and `key=value` are accepted.
+load_config_instance() {
+  file="$1"
+  target="$2"
+  in_section=0
+  CONFIG_INSTANCE_TYPE=""
+  cfg_host="" cfg_port="" cfg_user="" cfg_password="" cfg_database=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      \[*\])
+        name="${line#\[}"
+        name="${name%\]}"
+        if [ "$name" = "$target" ]; then
+          in_section=1
+        else
+          in_section=0
+        fi
+        continue
+        ;;
+      *) ;;
+    esac
+    [ "$in_section" -eq 1 ] || continue
+    case "$line" in
+      ''|'#'*|';'*) continue ;;
+      *) ;;
+    esac
+    case "$line" in
+      *=*) ;;
+      *) continue ;;
+    esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="$(printf '%s' "$key" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    value="$(printf '%s' "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    key_lc="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
+    case "$key_lc" in
+      type) CONFIG_INSTANCE_TYPE="$value" ;;
+      host) cfg_host="$value" ;;
+      port) cfg_port="$value" ;;
+      user) cfg_user="$value" ;;
+      password) cfg_password="$value" ;;
+      database) cfg_database="$value" ;;
+      *) ;;
+    esac
+  done < "$file"
+  [ -n "$cfg_host" ] && DB_HOST="$cfg_host"
+  [ -n "$cfg_port" ] && DB_PORT="$cfg_port"
+  [ -n "$cfg_user" ] && DB_USER="$cfg_user"
+  [ -n "$cfg_password" ] && DB_PASSWORD="$cfg_password"
+  [ -n "$cfg_database" ] && DB_DATABASE="$cfg_database"
+  return 0
+}
+
+# Orchestrates the full "determine config file -> enumerate instances ->
+# select instance -> validate type -> load fields" flow:
+#   1. If $CONFIG_FILE is set (from --config), it must exist or this dies.
+#      Otherwise, if ./dbs.conf exists in the current directory, it is used
+#      automatically. Otherwise, config-file handling is skipped entirely
+#      and this function is a no-op (pure CLI/env-var usage, unchanged).
+#   2. Enumerates all `[instance]` sections. Zero instances is an error.
+#      With exactly one instance, it is auto-selected (an explicit
+#      --instance naming anything else is an error). With two or more,
+#      --instance is required and must name one of them.
+#   3. Loads the selected instance's fields. Its `type` (case-insensitive)
+#      must be `mysql`, or this dies.
+# CLI arguments are parsed afterward by parse_common_args and always take
+# precedence over whatever this function loads.
+resolve_config_instance() {
+  config_file_to_use=""
   if [ -n "$CONFIG_FILE" ]; then
     [ -f "$CONFIG_FILE" ] || die "Config file not found: $CONFIG_FILE"
-    # shellcheck disable=SC1090
-    . "$CONFIG_FILE"
+    config_file_to_use="$CONFIG_FILE"
+  elif [ -f "$DEFAULT_CONFIG_FILE" ]; then
+    config_file_to_use="$DEFAULT_CONFIG_FILE"
   fi
+
+  [ -n "$config_file_to_use" ] || return 0
+
+  instances="$(list_config_instances "$config_file_to_use" | grep . || true)"
+  instance_count=0
+  if [ -n "$instances" ]; then
+    instance_count="$(printf '%s\n' "$instances" | grep -c .)"
+  fi
+
+  [ "$instance_count" -gt 0 ] \
+    || die "Config file '$config_file_to_use' exists but defines no instances (no [name] sections found)"
+
+  available="$(printf '%s\n' "$instances" | tr '\n' ' ' | sed 's/ *$//')"
+
+  if [ "$instance_count" -eq 1 ]; then
+    only_instance="$instances"
+    if [ -n "$INSTANCE_NAME" ] && [ "$INSTANCE_NAME" != "$only_instance" ]; then
+      die "Instance '$INSTANCE_NAME' not found in config file '$config_file_to_use'. Available instances: $available"
+    fi
+    selected="$only_instance"
+  else
+    [ -n "$INSTANCE_NAME" ] \
+      || die "Config file '$config_file_to_use' defines multiple instances; specify --instance <name>. Available instances: $available"
+    if ! printf '%s\n' "$instances" | grep -qx -- "$INSTANCE_NAME"; then
+      die "Instance '$INSTANCE_NAME' not found in config file '$config_file_to_use'. Available instances: $available"
+    fi
+    selected="$INSTANCE_NAME"
+  fi
+
+  load_config_instance "$config_file_to_use" "$selected"
+
+  type_lc="$(printf '%s' "$CONFIG_INSTANCE_TYPE" | tr '[:upper:]' '[:lower:]')"
+  [ "$type_lc" = "mysql" ] \
+    || die "Instance '$selected' has type=${CONFIG_INSTANCE_TYPE}, but my-ops.sh only supports mysql instances"
 }
+
 
 # Validates identifiers (database/table/column names) with an allowlist:
 # only letters, digits, and underscores are permitted. This is deliberately
@@ -638,7 +775,12 @@ Commands:
   restore   Restore one or more databases from a backup directory
 
 Common options:
-  --config <file>       KEY=VALUE config file
+  --config <file>        INI-style multi-instance config file (default:
+                         ./dbs.conf if it exists in the current directory)
+  --instance <name>      Instance section to use from the config file.
+                         Required when the config file defines 2+
+                         instances; optional (and must match) when it
+                         defines exactly 1.
   --host <host>         MySQL host (default 127.0.0.1)
   --port <port>         MySQL port (default 3306)
   --user <user>         MySQL user (default root)
@@ -700,7 +842,8 @@ main() {
 
   extract_config_file "$@"
   CONFIG_FILE="$_EXTRACTED_CONFIG_FILE"
-  load_config
+  INSTANCE_NAME="$_EXTRACTED_INSTANCE"
+  resolve_config_instance
   parse_common_args "$@"
 
   case "$cmd" in
