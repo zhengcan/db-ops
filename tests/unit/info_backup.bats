@@ -198,6 +198,26 @@ teardown() {
   [ -f "${matches[0]}" ]
 }
 
+@test "backup without --dir uses the dbs.conf instance name (not the host) when a config instance is resolved" {
+  cd "$WORK_DIR"
+  cat > dbs.conf <<'EOF'
+[prod]
+type = mysql
+host = mysql.internal
+port = 3306
+user = u
+password = p
+database = mydb
+EOF
+  run env PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" "$SCRIPT" backup
+  [ "$status" -eq 0 ]
+
+  # Path should use the instance name "prod", not the host "mysql.internal".
+  matches=("$WORK_DIR"/backup/mysql/prod/*/mydb.sql.gz)
+  [ -f "${matches[0]}" ]
+  [ ! -d "$WORK_DIR/backup/mysql/mysql.internal" ]
+}
+
 @test "sanitize_path_component replaces path-unsafe characters in a hostname with underscores" {
   # Sourcing the full script would execute main() with no args; DB_OPS_TEST
   # suppresses that so we can call the helper function directly.

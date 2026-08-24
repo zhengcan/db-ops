@@ -209,6 +209,11 @@ resolve_config_instance() {
   type_lc="$(printf '%s' "$CONFIG_INSTANCE_TYPE" | tr '[:upper:]' '[:lower:]')"
   [ "$type_lc" = "mysql" ] \
     || die "Instance '$selected' has type=${CONFIG_INSTANCE_TYPE}, but my-ops.sh only supports mysql instances"
+
+  # Record the actually-resolved instance name (covers both the
+  # auto-selected single-instance case and an explicit --instance), so
+  # callers like cmd_backup's default path naming can use it.
+  INSTANCE_NAME="$selected"
 }
 
 
@@ -500,8 +505,15 @@ cmd_backup() {
     [ -d "$BACKUP_DIR" ] || die "Backup base directory not found: $BACKUP_DIR"
     out_dir="${BACKUP_DIR%/}/backup_${timestamp}"
   else
-    safe_host="$(sanitize_path_component "$DB_HOST")"
-    out_dir="backup/mysql/${safe_host}/${timestamp}"
+    # Prefer the dbs.conf instance name (stable, human-chosen) when one was
+    # resolved; otherwise fall back to the sanitized connection host, as
+    # before (pure CLI/env-var usage with no config file in play).
+    if [ -n "$INSTANCE_NAME" ]; then
+      safe_label="$(sanitize_path_component "$INSTANCE_NAME")"
+    else
+      safe_label="$(sanitize_path_component "$DB_HOST")"
+    fi
+    out_dir="backup/mysql/${safe_label}/${timestamp}"
   fi
   mkdir -p "$out_dir"
 

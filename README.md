@@ -16,8 +16,9 @@
 # 检查连通性并查看将被备份的内容
 ./my-ops.sh info --host mysql --port 3306 --user root --password secret --database mydb
 
-# 备份一个或多个数据库（默认在当前目录生成 backup/mysql/<host>/<timestamp>/<db>.sql.gz，
-# 其中 <host> 是 --host/DB_HOST 经清洗后的值，仅保留字母、数字、'.'、'-'、'_'）
+# 备份一个或多个数据库（默认在当前目录生成 backup/mysql/<label>/<timestamp>/<db>.sql.gz，
+# 其中 <label> 是：若通过 dbs.conf/--instance 使用了配置实例，则为该实例名；
+# 否则为 --host/DB_HOST 经清洗后的值（仅保留字母、数字、'.'、'-'、'_'））
 ./my-ops.sh backup --host mysql --port 3306 --user root --password secret --database mydb
 ./my-ops.sh backup --host mysql --port 3306 --user root --password secret --database db1,db2
 ./my-ops.sh backup --host mysql --port 3306 --user root --password secret --all-databases
