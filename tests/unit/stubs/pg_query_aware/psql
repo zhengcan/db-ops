@@ -1,0 +1,77 @@
+#!/bin/sh
+# Query-aware psql stub: inspects the -c/-tAc query text (or -f file) and
+# returns canned output, so cmd_info/cmd_backup/cmd_restore logic can be
+# exercised without a real database. Every call is also logged to
+# $STUB_LOG for assertions on which queries/flags/connection targets were
+# actually issued (in particular, the two-phase "postgres" then "<db>"
+# connection sequence used by restore).
+echo "$0 $*" >> "${STUB_LOG:-/dev/null}"
+
+dbname=""
+file_arg=""
+query=""
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    -c|-tAc) query="$a" ;;
+    -f) file_arg="$a" ;;
+  esac
+  case "$a" in
+    --dbname=*) dbname="${a#--dbname=}" ;;
+  esac
+  prev="$a"
+done
+
+case "$query" in
+  *"pg_database"*)
+    printf 'db_one\ndb_two\n'
+    exit 0
+    ;;
+  *"table_type='BASE TABLE'"*)
+    echo 3
+    exit "${PSQL_EXIT_CODE:-0}"
+    ;;
+  *"table_type='VIEW'"*)
+    echo 1
+    exit "${PSQL_EXIT_CODE:-0}"
+    ;;
+  *"pg_proc"*)
+    echo 2
+    exit "${PSQL_EXIT_CODE:-0}"
+    ;;
+  *"information_schema.triggers"*)
+    echo 1
+    exit "${PSQL_EXIT_CODE:-0}"
+    ;;
+  *"pg_sequences"*)
+    echo 1
+    exit "${PSQL_EXIT_CODE:-0}"
+    ;;
+  *"SELECT 1;"*)
+    # check_connection's probe query gets its own exit-code override
+    # (PSQL_CONNECT_EXIT_CODE), distinct from PSQL_EXIT_CODE (which governs
+    # every other query/import call). This mirrors my-ops.sh's stub, where
+    # MYSQLADMIN_EXIT_CODE (ping/connection check) is independent of
+    # MYSQL_EXIT_CODE (everything else) because they're different binaries;
+    # psql serves both roles here, so the distinction is made by query text
+    # instead of by binary name.
+    exit "${PSQL_CONNECT_EXIT_CODE:-0}"
+    ;;
+  *"DROP DATABASE"*|*"CREATE DATABASE"*)
+    exit "${PSQL_EXIT_CODE:-0}"
+    ;;
+  *)
+    ;;
+esac
+
+if [ -n "$file_arg" ]; then
+  if [ -n "${STUB_STDIN_CAPTURE:-}" ]; then
+    {
+      echo "----- FILE IMPORT db=${dbname} file=${file_arg} -----"
+      cat "$file_arg" 2>/dev/null
+    } >> "$STUB_STDIN_CAPTURE" 2>/dev/null || true
+  fi
+  exit "${PSQL_EXIT_CODE:-0}"
+fi
+
+exit "${PSQL_EXIT_CODE:-0}"

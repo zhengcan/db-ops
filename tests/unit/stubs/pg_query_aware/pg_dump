@@ -1,0 +1,20 @@
+#!/bin/sh
+# Query-aware pg_dump stub: emits a distinguishable marker line containing
+# the target database name, so per-database backup output can be told
+# apart in multi-database tests. Every call is logged to $STUB_LOG.
+echo "$0 $*" >> "${STUB_LOG:-/dev/null}"
+
+dbname=""
+for a in "$@"; do
+  case "$a" in
+    --dbname=*) dbname="${a#--dbname=}" ;;
+  esac
+done
+
+if [ "${PGDUMP_EXIT_CODE:-0}" != "0" ]; then
+  echo "pg_dump: connection to server failed" >&2
+  exit "${PGDUMP_EXIT_CODE}"
+fi
+
+echo "-- PG_DUMP MARKER db=${dbname}"
+exit 0

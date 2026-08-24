@@ -1,0 +1,7 @@
+#!/bin/sh
+echo "$0 $*" >> "$STUB_LOG"
+echo "ARGC=$#" >> "$STUB_LOG"
+for a in "$@"; do
+  echo "ARG:[$a]" >> "$STUB_LOG"
+done
+exit "${PGDUMP_EXIT_CODE:-0}"
