@@ -10,7 +10,12 @@ CREATE TABLE products (
 INSERT INTO products (name, price, thumbnail) VALUES
   ('Widget', 9.99, UNHEX('89504E470D0A1A0A')),
   ('Gadget', 19.99, UNHEX('FFD8FFE000104A46')),
-  ('Doohickey', 5.49, NULL);
+  ('Doohickey', 5.49, NULL),
+  -- Regression case: 4-byte UTF-8 (emoji) must survive backup+restore.
+  -- See my-ops.sh's db_mysql()/db_mysqldump() comment for why this needs
+  -- --default-character-set=utf8mb4 on every connection, not just the
+  -- schema-import one.
+  ('🚧 Roadwork 🎉', 3.00, NULL);
 
 CREATE VIEW expensive_products AS
   SELECT id, name, price FROM products WHERE price > 10;

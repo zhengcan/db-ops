@@ -17,7 +17,11 @@ setup_file() {
 
   # Seed schema (docker-entrypoint-initdb.d bind mount is unreliable on
   # some hosts; pipe it in explicitly instead).
-  docker compose exec -T mysql mysql -uroot -prootpass testdb < init.sql
+  # --default-character-set=utf8mb4 is required here too: init.sql contains
+  # a 4-byte UTF-8 (emoji) literal, and without it the mysql client's own
+  # default charset (not necessarily utf8mb4) could mangle it before it
+  # even reaches my-ops.sh.
+  docker compose exec -T mysql mysql --default-character-set=utf8mb4 -uroot -prootpass testdb < init.sql
 
   # Long-lived Alpine container to run my-ops.sh in, avoiding bind-mount
   # reliability issues: copy the script in once via `docker cp`.
@@ -98,6 +102,15 @@ latest_backup_dir() {
   [ "$status" -eq 0 ]
   run query_testdb "SELECT COUNT(*) FROM audit_log WHERE message LIKE '%Gizmo%';"
   [ "$output" = "1" ]
+
+  # Regression: 4-byte UTF-8 (emoji) product name must round-trip exactly.
+  # Prior to the --default-character-set=utf8mb4 fix in db_mysql()/
+  # db_mysqldump(), this failed restore entirely with
+  # "ERROR 1366: Incorrect string value", because restore_one_database()
+  # imports data via a connection that never sees the dump's own
+  # "SET NAMES utf8mb4" line (it lands in the schema half of the split).
+  run query_testdb "SELECT HEX(name) FROM products WHERE name LIKE '%Roadwork%';"
+  [ "$output" = "F09F9AA720526F6164776F726B20F09F8E89" ]
 
   run_in_alpine "rm -rf '${backup_dir}'"
 }

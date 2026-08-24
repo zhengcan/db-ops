@@ -258,6 +258,26 @@ setup() {
   rm -f "$STUB_LOG"
 }
 
+@test "db_mysql explicitly forces utf8mb4 as the client charset" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass db_mysql -e \"SELECT 1\""
+  [ "$status" -eq 0 ]
+  grep -q -- "--default-character-set=utf8mb4" "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
+@test "db_mysqldump explicitly forces utf8mb4 as the client charset" {
+  STUB_DIR="$BATS_TEST_DIRNAME/stubs"
+  STUB_LOG="$(mktemp)"
+  run env PATH="$STUB_DIR:$PATH" DB_OPS_TEST=1 STUB_LOG="$STUB_LOG" \
+    sh -c ". '$SCRIPT'; DB_HOST=testhost DB_PORT=3306 DB_USER=testuser DB_PASSWORD=testpass db_mysqldump testdb"
+  [ "$status" -eq 0 ]
+  grep -q -- "--default-character-set=utf8mb4" "$STUB_LOG"
+  rm -f "$STUB_LOG"
+}
+
 @test "main loads config before parsing CLI args so CLI args take precedence" {
   cfg="$(mktemp)"
   printf '[cfg]\ntype = mysql\nhost = cfghost\n' > "$cfg"

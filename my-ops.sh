@@ -390,10 +390,28 @@ db_mysql() {
     "--user=${DB_USER}" \
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
+    "--default-character-set=utf8mb4" \
     "$@"
   "$MYSQL_BIN" "$@"
 }
 
+# NOTE on --default-character-set=utf8mb4 (both here and in db_mysqldump below):
+# restore_one_database() splits a single mysqldump output into a schema part
+# and a data part (see the `awk '/^INSERT INTO /{in_insert=1}...'` split
+# below), then imports each part via *separate* db_mysql invocations (i.e.
+# separate connections). mysqldump's own "/*!40101 SET NAMES utf8mb4 */;"
+# header line always lands in the schema part (it appears before the first
+# INSERT line), so the data-import connection never sees it and falls back
+# to the mysql/mariadb client library's own compiled-in default charset --
+# which is NOT always utf8mb4 (e.g. Alpine's mariadb-connector-c defaults to
+# utf8mb3, a 3-byte encoding). Any 4-byte UTF-8 data (emoji, some CJK
+# extension characters, etc.) would then be rejected with
+# "ERROR 1366: Incorrect string value" even though the target column is a
+# correctly-defined utf8mb4 column that can hold it just fine. Passing
+# --default-character-set=utf8mb4 explicitly on every connection removes the
+# dependency on that embedded SET NAMES line surviving the split, and is
+# applied unconditionally (not just for the data-import path) so all
+# connections behave consistently.
 db_mysqldump() {
   [ -n "$_TMP_DEFAULTS_FILE" ] || make_defaults_file
   set -- \
@@ -403,6 +421,7 @@ db_mysqldump() {
     "--user=${DB_USER}" \
     "--ssl" \
     "--skip-ssl-verify-server-cert" \
+    "--default-character-set=utf8mb4" \
     "$@"
   "$MYSQLDUMP_BIN" "$@"
 }
